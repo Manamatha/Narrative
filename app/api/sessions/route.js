@@ -1,16 +1,21 @@
 // app/api/sessions/route.js
-import fs from 'fs'
+import fs from 'fs/promises'
 import path from 'path'
 
 const DATA_FILE = path.resolve('./sessionsData.json')
 
-// Fonction pour lire les données
-const readData = () => {
+// Lecture asynchrone
+const readData = async () => {
   try {
-    if (!fs.existsSync(DATA_FILE)) {
-      return { sessions: {}, sessionChats: {}, currentSessionId: null }
-    }
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8')
+    // Si le fichier n'existe pas, on le crée avec des données vides
+    await fs.access(DATA_FILE).catch(async () => {
+      await fs.writeFile(
+        DATA_FILE,
+        JSON.stringify({ sessions: {}, sessionChats: {}, currentSessionId: null }, null, 2)
+      )
+    })
+
+    const raw = await fs.readFile(DATA_FILE, 'utf-8')
     return JSON.parse(raw)
   } catch (err) {
     console.error('Erreur lecture sessions:', err)
@@ -18,33 +23,51 @@ const readData = () => {
   }
 }
 
-// Fonction pour sauvegarder les données
-const saveData = (data) => {
+// Écriture asynchrone
+const saveData = async (data) => {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2))
+    await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2))
   } catch (err) {
     console.error('Erreur sauvegarde sessions:', err)
   }
 }
 
+// Sauvegarde partielle : ne met à jour que les sessions reçues
+const savePartial = async (partial) => {
+  const currentData = await readData()
+
+  if (partial.sessions) {
+    currentData.sessions = { ...currentData.sessions, ...partial.sessions }
+  }
+  if (partial.sessionChats) {
+    currentData.sessionChats = { ...currentData.sessionChats, ...partial.sessionChats }
+  }
+  if (partial.currentSessionId) {
+    currentData.currentSessionId = partial.currentSessionId
+  }
+
+  await saveData(currentData)
+  return currentData
+}
+
 // GET /api/sessions → renvoie toutes les sessions
 export async function GET(req) {
-  const data = readData()
+  const data = await readData()
   return new Response(JSON.stringify(data), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   })
 }
 
-// POST /api/sessions → sauvegarde toutes les sessions envoyées
+// POST /api/sessions → sauvegarde partielle ou complète
 export async function POST(req) {
   try {
     const body = await req.json()
-    const { sessions, sessionChats, currentSessionId } = body
-    saveData({ sessions, sessionChats, currentSessionId })
-    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    const updatedData = await savePartial(body)
+
+    return new Response(JSON.stringify({ ok: true, data: updatedData }), { status: 200 })
   } catch (err) {
-    console.error(err)
+    console.error('Erreur POST sessions:', err)
     return new Response(JSON.stringify({ ok: false, error: err.message }), { status: 500 })
   }
 }

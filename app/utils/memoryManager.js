@@ -4,20 +4,25 @@ class MemoryManager {
     this.currentSessionId = null
     this.sessionChats = {}
     
-    // 🆕 AJOUT: Cache des tags
+    // Cache des tags pour contexte intelligent
     this.tagsRecherchesRecent = {}
     this.messageCountGlobal = 0
-    
+
+    // Timeout / batch pour éviter surcharge Vercel
+    this.saveTimeout = null
+    this.saveDelay = 1000 // 1s de délai pour batcher les sauvegardes
+
     this.loadSessions()
     this.loadFromServer()
   }
 
   async loadFromServer() {
     try {
-      const response = await fetch('/api/getSessions') // <-- adapter à ton endpoint
+      const response = await fetch('/api/getSessions')
       if (response.ok) {
         const data = await response.json()
         if (data.sessions) this.sessions = data.sessions
+        if (data.sessionChats) this.sessionChats = data.sessionChats
         if (data.currentSessionId) this.currentSessionId = data.currentSessionId
       }
     } catch (error) {
@@ -43,6 +48,7 @@ class MemoryManager {
     }
   }
 
+  // Sauvegarde batchée pour éviter timeouts Vercel
   saveAllData() {
     if (typeof window !== 'undefined') {
       try {
@@ -51,7 +57,9 @@ class MemoryManager {
           currentSessionId: this.currentSessionId
         }))
         localStorage.setItem('jdr_session_chats', JSON.stringify(this.sessionChats))
-        this.saveToServer()
+        
+        if (this.saveTimeout) clearTimeout(this.saveTimeout)
+        this.saveTimeout = setTimeout(() => this.saveToServer(), this.saveDelay)
       } catch (error) {
         console.error("❌ Erreur sauvegarde:", error)
       }
@@ -163,15 +171,6 @@ class MemoryManager {
   loadCampaign() {
     return this.getCurrentCampaign()
   }
-
-  saveCampaign() {
-    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
-      this.sessions[this.currentSessionId].campaign.meta.date_derniere_sauvegarde = new Date().toISOString()
-      this.sessions[this.currentSessionId].lastAccessed = new Date().toISOString()
-      this.saveAllData()
-    }
-  }
-
   generateOptimizedContext(dernierMessage, messageCount) {
     const campaign = this.getCurrentCampaign()
     if (!campaign) return ""
@@ -196,9 +195,9 @@ class MemoryManager {
 
   searchTagsIntelligent(dernierMessage) {
     if (!dernierMessage) return ""
-    
+
     this.messageCountGlobal++
-    
+
     Object.keys(this.tagsRecherchesRecent).forEach(tag => {
       if (this.messageCountGlobal - this.tagsRecherchesRecent[tag] > 8) {
         delete this.tagsRecherchesRecent[tag]
@@ -207,10 +206,10 @@ class MemoryManager {
 
     const tagsTrouves = this.findTagsInMessage(dernierMessage)
     if (tagsTrouves.length === 0) return ""
-    
+
     const tagsAFiltrer = tagsTrouves.filter(tag => !this.tagsRecherchesRecent[tag])
     if (tagsAFiltrer.length === 0) return ""
-    
+
     tagsAFiltrer.forEach(tag => {
       this.tagsRecherchesRecent[tag] = this.messageCountGlobal
     })
@@ -220,12 +219,13 @@ class MemoryManager {
 
   findTagsInMessage(message) {
     if (!message || typeof message !== 'string') return []
-    
+
     const messageMinuscule = message.toLowerCase()
     const campaign = this.getCurrentCampaign()
     if (!campaign) return []
-    
+
     const tagsTrouves = new Set()
+
     campaign.tags_globaux.forEach(tag => {
       if (messageMinuscule.includes(tag.toLowerCase())) tagsTrouves.add(tag)
     })
@@ -243,28 +243,28 @@ class MemoryManager {
         lieu.tags.forEach(tag => tagsTrouves.add(tag))
       }
     })
-    
+
     return Array.from(tagsTrouves).slice(0, 5)
   }
 
   getElementsByTags(tags) {
     const campaign = this.getCurrentCampaign()
     if (!campaign || tags.length === 0) return ""
-    
+
     let resultat = "\n// CONTEXTE RÉCENT:\n"
-    
+
     tags.forEach(tag => {
-      const lieux = campaign.lieux_importants.filter(lieu => 
+      const lieux = campaign.lieux_importants.filter(lieu =>
         lieu.tags.includes(tag) || lieu.nom.toLowerCase().includes(tag.toLowerCase())
       )
       if (lieux.length > 0) resultat += `LIEUX[${tag}]: ${lieux.map(l => l.nom).join(', ')}\n`
-      
-      const pnj = campaign.pnj_importants.filter(p => 
+
+      const pnj = campaign.pnj_importants.filter(p =>
         p.tags.includes(tag) || p.nom.toLowerCase().includes(tag.toLowerCase())
       )
       if (pnj.length > 0) resultat += `PNJ[${tag}]: ${pnj.map(p => p.nom).join(', ')}\n`
     })
-    
+
     return resultat
   }
 
@@ -331,42 +331,41 @@ class MemoryManager {
     if (savedCount > 0) this.saveCampaign()
     return savedCount
   }
-
   processPNJUpdates(updates) {
     const campaign = this.getCurrentCampaign()
     if (!campaign) return 0
 
     let updatedCount = 0
     const maintenant = new Date().toISOString().split('T')[0]
-    
+
     updates.forEach(update => {
-      const pnj = campaign.pnj_importants.find(p => 
+      const pnj = campaign.pnj_importants.find(p =>
         p.nom.toLowerCase() === update.nom.toLowerCase()
       )
-      
+
       if (pnj) {
         const emotions = this.decoderEmotions(pnj.emotion)
         const vitesse = pnj.vitesse_evolution || 1.0
         const changementBase = parseInt(update.changement)
         const changementFinal = Math.round(changementBase * vitesse)
-        
+
         if (emotions[update.emotion] !== undefined) {
           const ancienneValeur = emotions[update.emotion]
           emotions[update.emotion] = Math.max(0, Math.min(100, ancienneValeur + changementFinal))
           pnj.emotion = this.encoderEmotions(emotions)
-          
+
           const evenement = `${maintenant}: ${update.raison} → ${update.emotion}${changementFinal >= 0 ? '+' : ''}${changementFinal}`
           if (pnj.histoire) {
             pnj.histoire += ` | ${evenement}`
           } else {
             pnj.histoire = evenement
           }
-          
+
           updatedCount++
         }
       }
     })
-    
+
     if (updatedCount > 0) this.saveCampaign()
     return updatedCount
   }
@@ -389,6 +388,7 @@ class MemoryManager {
   }
 
   getCampaign() { return this.getCurrentCampaign() }
+
   updateCampaign(updatedCampaign) {
     if(this.currentSessionId && this.sessions[this.currentSessionId]){
       this.sessions[this.currentSessionId].campaign = updatedCampaign
@@ -494,7 +494,6 @@ class MemoryManager {
     }
     return false
   }
-
   // === PNJ ===
   addPNJ(){
     const campaign=this.getCurrentCampaign()
@@ -654,6 +653,7 @@ class MemoryManager {
     return false
   }
 
+  // === Gestion tags globaux ===
   getAvailableTags(){
     const campaign=this.getCurrentCampaign()
     if(!campaign) return []
