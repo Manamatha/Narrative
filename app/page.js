@@ -15,40 +15,42 @@ export default function Home() {
   const [error, setError] = useState(null)
   const chatRef = useRef(null)
 
-  // ✅ Scroll automatique
   useEffect(() => {
-    if (chatRef.current) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight
-    }
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
 
   useEffect(() => {
     const memoryManager = getMemoryManager()
     setCurrentSession(memoryManager.currentSessionId)
-    const sessionMessages = memoryManager.getSessionMessages(memoryManager.currentSessionId)
-    setMessages(sessionMessages)
+    // On charge les messages de la session courante
+    setMessages(memoryManager.sessions[memoryManager.currentSessionId]?.campaign?.messages || [])
     setIsLoading(false)
   }, [])
 
+  // ⚡ Version adaptée pour ton SessionManager actuel
   const handleSessionChange = (sessionId) => {
     const memoryManager = getMemoryManager()
-    memoryManager.setSessionMessages(messages, memoryManager.currentSessionId)
+    // Sauvegarde messages de la session en cours
+    if (currentSession) {
+      memoryManager.sessions[currentSession].campaign.messages = messages
+    }
     memoryManager.switchSession(sessionId)
     setCurrentSession(sessionId)
-    const newSessionMessages = memoryManager.getSessionMessages(sessionId)
-    setMessages(newSessionMessages)
+    // Charge messages de la nouvelle session
+    setMessages(memoryManager.sessions[sessionId]?.campaign?.messages || [])
   }
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isSending) return
-
     setIsSending(true)
     setError(null)
     const memoryManager = getMemoryManager()
     const newMessages = [...messages, { role: 'user', content: inputMessage }]
     setMessages(newMessages)
-    memoryManager.setSessionMessages(newMessages, memoryManager.currentSessionId)
-    const messageBackup = inputMessage
+    if (currentSession) {
+      memoryManager.sessions[currentSession].campaign.messages = newMessages
+    }
+    const backup = inputMessage
     setInputMessage('')
 
     try {
@@ -58,7 +60,7 @@ export default function Home() {
         body: JSON.stringify({
           messages: newMessages,
           allowMemoryWrite: true,
-          sessionId: memoryManager.currentSessionId
+          sessionId: currentSession,
         }),
       })
 
@@ -69,12 +71,14 @@ export default function Home() {
       if (data.response) {
         const finalMessages = [...newMessages, { role: 'assistant', content: data.response }]
         setMessages(finalMessages)
-        memoryManager.setSessionMessages(finalMessages, memoryManager.currentSessionId)
+        if (currentSession) {
+          memoryManager.sessions[currentSession].campaign.messages = finalMessages
+        }
       }
-    } catch (error) {
-      console.error('Erreur:', error)
-      setError(error.message || "Erreur de connexion")
-      setInputMessage(messageBackup)
+    } catch (err) {
+      console.error(err)
+      setError(err.message || 'Erreur de connexion')
+      setInputMessage(backup)
     } finally {
       setIsSending(false)
     }
@@ -82,44 +86,25 @@ export default function Home() {
 
   const getCurrentSessionName = () => {
     const memoryManager = getMemoryManager()
-    const session = memoryManager.sessions[memoryManager.currentSessionId]
-    return session?.name || "Aventure"
+    return memoryManager.sessions[currentSession]?.name || 'Aventure'
   }
 
   if (isLoading) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center">
-        <div>Chargement...</div>
+        Chargement...
       </div>
     )
   }
 
   return (
     <div
-      className="min-h-screen text-white bg-cover bg-center relative"
-      style={{ backgroundImage: "url('/images/fond-donjon.png')" }}
+      className="min-h-screen w-full text-white relative bg-center bg-cover"
+      style={{ backgroundImage: "url('/images/fond-donjon.jpg')" }}
     >
-      {/* Ombre globale */}
-      <div className="absolute inset-0 bg-black bg-opacity-60"></div>
-
-      {/* Maître du Donjon */}
-      <div className="absolute left-2 sm:left-4 bottom-0 flex flex-col items-center z-10">
-        <img
-          src="/images/md-ombre.png"
-          alt="Maître du donjon"
-          className="w-32 sm:w-48 opacity-90"
-        />
-        <div className="relative">
-          <img
-            src="/images/cristal.png"
-            alt="Cristal"
-            className="w-8 sm:w-12 animate-pulse-smooth absolute bottom-10 left-1/2 -translate-x-1/2"
-          />
-        </div>
-      </div>
-
       {/* Contenu principal */}
       <div className="relative z-20 w-full max-w-full sm:max-w-4xl mx-auto p-4 sm:p-8 pt-16">
+        {/* Header */}
         <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 sm:mb-6 gap-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
             <h1 className="text-2xl sm:text-3xl font-bold text-yellow-400 drop-shadow-lg">
@@ -129,16 +114,17 @@ export default function Home() {
               Session: <strong>{getCurrentSessionName()}</strong>
             </div>
           </div>
-          <div className="flex flex-wrap gap-2 sm:gap-3">
+
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 w-full sm:w-auto">
             <button
               onClick={() => setIsSessionsOpen(true)}
-              className="bg-yellow-700 hover:bg-yellow-800 border border-yellow-400 px-4 py-2 rounded shadow-md transition"
+              className="bg-yellow-700 hover:bg-yellow-800 border border-yellow-400 px-4 py-2 rounded shadow-md transition w-full sm:w-auto"
             >
               📁 Sessions
             </button>
             <button
               onClick={() => setIsMemoryOpen(true)}
-              className="bg-purple-700 hover:bg-purple-800 border border-purple-400 px-4 py-2 rounded shadow-md transition"
+              className="bg-purple-700 hover:bg-purple-800 border border-purple-400 px-4 py-2 rounded shadow-md transition w-full sm:w-auto"
             >
               🧠 Mémoire
             </button>
@@ -146,27 +132,21 @@ export default function Home() {
         </header>
 
         {/* Parchemin */}
-        <div
-          className="rounded-2xl border border-yellow-900 bg-cover bg-center shadow-inner relative w-full"
-          style={{
-            backgroundImage: "url('/images/parchemin.png')",
-            backgroundSize: 'cover',
-          }}
-        >
+        <div className="rounded-2xl border border-yellow-900 shadow-inner relative w-full bg-black/50 min-h-[50vh] sm:min-h-[60vh] p-4 sm:p-6">
           <div
             ref={chatRef}
-            className="space-y-4 mb-4 overflow-auto max-h-[50vh] sm:max-h-[60vh] p-4 sm:p-6"
+            className="space-y-4 mb-4 overflow-auto max-h-[50vh] sm:max-h-[60vh]"
           >
-            {messages.map((message, index) => (
+            {messages.map((msg, idx) => (
               <div
-                key={index}
+                key={idx}
                 className={`p-3 rounded-lg break-words ${
-                  message.role === 'user'
+                  msg.role === 'user'
                     ? 'bg-yellow-800/80 text-white ml-2 sm:ml-8'
                     : 'bg-gray-800/80 text-gray-200 mr-2 sm:mr-8'
                 }`}
               >
-                {message.content}
+                {msg.content}
               </div>
             ))}
           </div>
@@ -194,13 +174,6 @@ export default function Home() {
               {isSending ? '⏳...' : 'Envoyer'}
             </button>
           </div>
-
-          {/* Bougie décorative */}
-          <img
-            src="/images/bougie.gif"
-            alt="Bougie"
-            className="absolute top-2 right-2 sm:right-4 w-8 sm:w-10"
-          />
         </div>
       </div>
 

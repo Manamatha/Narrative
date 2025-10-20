@@ -9,6 +9,20 @@ class MemoryManager {
     this.messageCountGlobal = 0
     
     this.loadSessions()
+    this.loadFromServer()
+  }
+
+  async loadFromServer() {
+    try {
+      const response = await fetch('/api/getSessions') // <-- adapter à ton endpoint
+      if (response.ok) {
+        const data = await response.json()
+        if (data.sessions) this.sessions = data.sessions
+        if (data.currentSessionId) this.currentSessionId = data.currentSessionId
+      }
+    } catch (error) {
+      console.warn("⚠️ Impossible de charger les sessions depuis le serveur:", error)
+    }
   }
 
   loadSessions() {
@@ -37,14 +51,41 @@ class MemoryManager {
           currentSessionId: this.currentSessionId
         }))
         localStorage.setItem('jdr_session_chats', JSON.stringify(this.sessionChats))
+        this.saveToServer()
       } catch (error) {
         console.error("❌ Erreur sauvegarde:", error)
       }
     }
   }
 
+  saveCampaign() {
+    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
+      this.sessions[this.currentSessionId].campaign.meta.date_derniere_sauvegarde = new Date().toISOString()
+      this.sessions[this.currentSessionId].lastAccessed = new Date().toISOString()
+      this.saveAllData()
+    }
+  }
+
+  async saveToServer() {
+    try {
+      if (!this.currentSessionId) return
+      const payload = {
+        currentSessionId: this.currentSessionId,
+        sessions: this.sessions,
+        sessionChats: this.sessionChats
+      }
+      await fetch('/api/saveSession', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    } catch (error) {
+      console.error("❌ Erreur sauvegarde serveur:", error)
+    }
+  }
+
   createNewSession(name = "Nouvelle Aventure") {
-    const sessionId = 'session_' + crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2, 9)
+    const sessionId = 'session_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2, 9))
     
     this.sessions[sessionId] = {
       id: sessionId,
@@ -119,8 +160,6 @@ class MemoryManager {
     )
   }
 
-  // === CODE ORIGINAL ===
-
   loadCampaign() {
     return this.getCurrentCampaign()
   }
@@ -133,25 +172,20 @@ class MemoryManager {
     }
   }
 
-  // 🆕 MODIFICATION: Ajout de la recherche de tags
   generateOptimizedContext(dernierMessage, messageCount) {
     const campaign = this.getCurrentCampaign()
     if (!campaign) return ""
 
     let contexte = ""
-
-    // META - Toujours inclus
     contexte += `AVENTURE: ${campaign.meta.titre}\n`
     if (campaign.meta.resume_global) {
       contexte += `RÉSUMÉ: ${campaign.meta.resume_global}\n`
     }
 
-    // STYLE - Rechargé tous les 8 messages
     if (messageCount % 8 === 0 && campaign.style_narration) {
       contexte += `STYLE: ${campaign.style_narration}\n`
     }
 
-    // 🆕 NOUVEAU: Recherche intelligente des tags
     const contexteTags = this.searchTagsIntelligent(dernierMessage)
     if (contexteTags) {
       contexte += contexteTags
@@ -160,13 +194,11 @@ class MemoryManager {
     return contexte
   }
 
-  // 🆕 NOUVELLE MÉTHODE: Recherche de tags avec cache
   searchTagsIntelligent(dernierMessage) {
     if (!dernierMessage) return ""
     
     this.messageCountGlobal++
     
-    // Nettoyer les recherches vieilles de plus de 8 messages
     Object.keys(this.tagsRecherchesRecent).forEach(tag => {
       if (this.messageCountGlobal - this.tagsRecherchesRecent[tag] > 8) {
         delete this.tagsRecherchesRecent[tag]
@@ -176,10 +208,7 @@ class MemoryManager {
     const tagsTrouves = this.findTagsInMessage(dernierMessage)
     if (tagsTrouves.length === 0) return ""
     
-    const tagsAFiltrer = tagsTrouves.filter(tag => 
-      !this.tagsRecherchesRecent[tag]
-    )
-    
+    const tagsAFiltrer = tagsTrouves.filter(tag => !this.tagsRecherchesRecent[tag])
     if (tagsAFiltrer.length === 0) return ""
     
     tagsAFiltrer.forEach(tag => {
@@ -189,7 +218,6 @@ class MemoryManager {
     return this.getElementsByTags(tagsAFiltrer)
   }
 
-  // 🆕 NOUVELLE MÉTHODE: Trouver les tags dans un message
   findTagsInMessage(message) {
     if (!message || typeof message !== 'string') return []
     
@@ -198,23 +226,17 @@ class MemoryManager {
     if (!campaign) return []
     
     const tagsTrouves = new Set()
-    
-    // Chercher dans les tags globaux
     campaign.tags_globaux.forEach(tag => {
-      if (messageMinuscule.includes(tag.toLowerCase())) {
-        tagsTrouves.add(tag)
-      }
+      if (messageMinuscule.includes(tag.toLowerCase())) tagsTrouves.add(tag)
     })
-    
-    // Chercher dans les noms de PNJ
+
     campaign.pnj_importants.forEach(pnj => {
       if (messageMinuscule.includes(pnj.nom.toLowerCase())) {
         tagsTrouves.add(pnj.nom)
         pnj.tags.forEach(tag => tagsTrouves.add(tag))
       }
     })
-    
-    // Chercher dans les noms de lieux
+
     campaign.lieux_importants.forEach(lieu => {
       if (messageMinuscule.includes(lieu.nom.toLowerCase())) {
         tagsTrouves.add(lieu.nom)
@@ -225,7 +247,6 @@ class MemoryManager {
     return Array.from(tagsTrouves).slice(0, 5)
   }
 
-  // 🆕 NOUVELLE MÉTHODE: Récupérer les éléments par tags
   getElementsByTags(tags) {
     const campaign = this.getCurrentCampaign()
     if (!campaign || tags.length === 0) return ""
@@ -236,18 +257,12 @@ class MemoryManager {
       const lieux = campaign.lieux_importants.filter(lieu => 
         lieu.tags.includes(tag) || lieu.nom.toLowerCase().includes(tag.toLowerCase())
       )
-      
-      if (lieux.length > 0) {
-        resultat += `LIEUX[${tag}]: ${lieux.map(l => l.nom).join(', ')}\n`
-      }
+      if (lieux.length > 0) resultat += `LIEUX[${tag}]: ${lieux.map(l => l.nom).join(', ')}\n`
       
       const pnj = campaign.pnj_importants.filter(p => 
         p.tags.includes(tag) || p.nom.toLowerCase().includes(tag.toLowerCase())
       )
-      
-      if (pnj.length > 0) {
-        resultat += `PNJ[${tag}]: ${pnj.map(p => p.nom).join(', ')}\n`
-      }
+      if (pnj.length > 0) resultat += `PNJ[${tag}]: ${pnj.map(p => p.nom).join(', ')}\n`
     })
     
     return resultat
@@ -258,7 +273,6 @@ class MemoryManager {
     if (!campaign) return 0
 
     let savedCount = 0
-
     sauvegardes.forEach(save => {
       switch (save.type) {
         case 'LIEU':
@@ -270,7 +284,6 @@ class MemoryManager {
           })
           savedCount++
           break
-
         case 'PNJ':
           campaign.pnj_importants.push({
             nom: save.nom,
@@ -288,7 +301,6 @@ class MemoryManager {
           })
           savedCount++
           break
-
         case 'EVENEMENT':
           campaign.evenements_cles.push({
             titre: save.titre || "Événement important",
@@ -302,7 +314,6 @@ class MemoryManager {
           })
           savedCount++
           break
-
         case 'CHAPITRE':
           campaign.chapitres.push({
             id: campaign.chapitres.length + 1,
@@ -317,10 +328,7 @@ class MemoryManager {
       }
     })
 
-    if (savedCount > 0) {
-      this.saveCampaign()
-    }
-
+    if (savedCount > 0) this.saveCampaign()
     return savedCount
   }
 
@@ -359,392 +367,316 @@ class MemoryManager {
       }
     })
     
-    if (updatedCount > 0) {
-      this.saveCampaign()
-    }
-    
+    if (updatedCount > 0) this.saveCampaign()
     return updatedCount
   }
 
   decoderEmotions(emotionCode) {
-    if (!emotionCode) return {
-      confiance: 50, amour: 30, peur: 50, haine: 10, respect: 50, jalousie: 10
-    }
-    
-    const emotions = { confiance: 50, amour: 30, peur: 50, haine: 10, respect: 50, jalousie: 10 }
-    
+    if (!emotionCode) return { confiance:50, amour:30, peur:50, haine:10, respect:50, jalousie:10 }
+    const emotions = { confiance:50, amour:30, peur:50, haine:10, respect:50, jalousie:10 }
     emotionCode.split('-').forEach(part => {
       const code = part[0]
       const valeur = parseInt(part.slice(1))
-      const map = { 'C': 'confiance', 'A': 'amour', 'P': 'peur', 'H': 'haine', 'R': 'respect', 'J': 'jalousie' }
-      if (map[code] && !isNaN(valeur)) {
-        emotions[map[code]] = valeur
-      }
+      const map = { 'C':'confiance','A':'amour','P':'peur','H':'haine','R':'respect','J':'jalousie' }
+      if(map[code] && !isNaN(valeur)) emotions[map[code]] = valeur
     })
-    
     return emotions
   }
 
   encoderEmotions(emotions) {
-    const map = { 'confiance': 'C', 'amour': 'A', 'peur': 'P', 'haine': 'H', 'respect': 'R', 'jalousie': 'J' }
-    return Object.entries(emotions)
-      .map(([emotion, valeur]) => `${map[emotion]}${valeur}`)
-      .join('-')
+    const map = { 'confiance':'C','amour':'A','peur':'P','haine':'H','respect':'R','jalousie':'J' }
+    return Object.entries(emotions).map(([emotion,valeur])=>`${map[emotion]}${valeur}`).join('-')
   }
 
-  getCampaign() {
-    return this.getCurrentCampaign()
-  }
-
+  getCampaign() { return this.getCurrentCampaign() }
   updateCampaign(updatedCampaign) {
-    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
+    if(this.currentSessionId && this.sessions[this.currentSessionId]){
       this.sessions[this.currentSessionId].campaign = updatedCampaign
       this.saveCampaign()
     }
   }
 
-    addGlobalTag(tag) {
+  addGlobalTag(tag){
     const campaign = this.getCurrentCampaign()
-    if (campaign && !campaign.tags_globaux.includes(tag)) {
-      campaign.tags_globaux.push(tag)
+    if(campaign && tag && !campaign.tags_globaux.includes(tag)){
+      campaign.tags_globaux.push(tag.trim())
       this.saveCampaign()
+      return true
     }
+    return false
   }
 
-  removeGlobalTag(tag) {
+  removeGlobalTag(tag){
     const campaign = this.getCurrentCampaign()
-    if (campaign) {
-      campaign.tags_globaux = campaign.tags_globaux.filter(t => t !== tag)
+    if(campaign){
+      campaign.tags_globaux = campaign.tags_globaux.filter(t=>t!==tag)
       this.saveCampaign()
+      return true
     }
+    return false
   }
 
-  // === 🆕 MÉTHODES MANQUANTES AJOUTÉES ===
-
-  updateStyleNarration(newStyle) {
-    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
-      this.sessions[this.currentSessionId].campaign.style_narration = newStyle;
-      this.saveCampaign();
-      return true;
+  updateStyleNarration(newStyle){
+    if(this.currentSessionId && this.sessions[this.currentSessionId]){
+      this.sessions[this.currentSessionId].campaign.style_narration = newStyle
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  updateMeta(field, value) {
-    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
-      this.sessions[this.currentSessionId].campaign.meta[field] = value;
-      this.saveCampaign();
-      return true;
+  updateMeta(field,value){
+    if(this.currentSessionId && this.sessions[this.currentSessionId]){
+      this.sessions[this.currentSessionId].campaign.meta[field] = value
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  // Tags globaux
-  addGlobalTag(tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && tag && !campaign.tags_globaux.includes(tag)) {
-      campaign.tags_globaux.push(tag.trim());
-      this.saveCampaign();
-      return true;
+  // === Chapitres ===
+  addChapitre(){
+    const campaign = this.getCurrentCampaign()
+    if(campaign){
+      const newId = Math.max(0,...campaign.chapitres.map(c=>c.id))+1
+      campaign.chapitres.push({id:newId,titre:"Nouveau chapitre",resume:"",tags:[],date:new Date().toISOString(),priorite:5})
+      this.saveCampaign()
+      return newId
     }
-    return false;
+    return null
   }
 
-  removeGlobalTag(tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      campaign.tags_globaux = campaign.tags_globaux.filter(t => t !== tag);
-      this.saveCampaign();
-      return true;
-    }
-    return false;
-  }
-
-  // Chapitres
-  addChapitre() {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      const newId = Math.max(0, ...campaign.chapitres.map(c => c.id)) + 1;
-      campaign.chapitres.push({
-        id: newId,
-        titre: "Nouveau chapitre",
-        resume: "",
-        tags: [],
-        date: new Date().toISOString(),
-        priorite: 5
-      });
-      this.saveCampaign();
-      return newId;
-    }
-    return null;
-  }
-
-  updateChapitre(id, field, value) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      const chapitre = campaign.chapitres.find(c => c.id === id);
-      if (chapitre && chapitre[field] !== undefined) {
-        chapitre[field] = value;
-        this.saveCampaign();
-        return true;
+  updateChapitre(id,field,value){
+    const campaign = this.getCurrentCampaign()
+    if(campaign){
+      const chapitre = campaign.chapitres.find(c=>c.id===id)
+      if(chapitre && chapitre[field]!==undefined){
+        chapitre[field]=value
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  addTagToChapitre(chapitreId, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      const chapitre = campaign.chapitres.find(c => c.id === chapitreId);
-      if (chapitre && !chapitre.tags.includes(tag)) {
-        chapitre.tags.push(tag);
-        this.saveCampaign();
-        return true;
+  addTagToChapitre(chapitreId,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      const chapitre=campaign.chapitres.find(c=>c.id===chapitreId)
+      if(chapitre && !chapitre.tags.includes(tag)){
+        chapitre.tags.push(tag)
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  removeTagFromChapitre(chapitreId, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      const chapitre = campaign.chapitres.find(c => c.id === chapitreId);
-      if (chapitre) {
-        chapitre.tags = chapitre.tags.filter(t => t !== tag);
-        this.saveCampaign();
-        return true;
+  removeTagFromChapitre(chapitreId,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      const chapitre=campaign.chapitres.find(c=>c.id===chapitreId)
+      if(chapitre){
+        chapitre.tags=chapitre.tags.filter(t=>t!==tag)
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  deleteChapitre(id) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      campaign.chapitres = campaign.chapitres.filter(c => c.id !== id);
-      this.saveCampaign();
-      return true;
+  deleteChapitre(id){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      campaign.chapitres=campaign.chapitres.filter(c=>c.id!==id)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  // PNJ
-  addPNJ() {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      campaign.pnj_importants.push({
-        nom: "Nouveau PNJ",
-        role: "",
-        description: "",
-        emotion: "C50-A30-P50-H10-R50-J10",
-        caractere: "",
-        valeurs: "",
-        peurs: "",
-        desirs: "",
-        histoire: "",
-        vitesse_evolution: 1.0,
-        tags: [],
-        priorite: 5
-      });
-      this.saveCampaign();
-      return true;
+  // === PNJ ===
+  addPNJ(){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      campaign.pnj_importants.push({nom:"Nouveau PNJ",role:"",description:"",emotion:"C50-A30-P50-H10-R50-J10",caractere:"",valeurs:"",peurs:"",desirs:"",histoire:"",vitesse_evolution:1.0,tags:[],priorite:5})
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  updatePNJ(index, field, value) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.pnj_importants[index]) {
-      campaign.pnj_importants[index][field] = value;
-      this.saveCampaign();
-      return true;
+  updatePNJ(index,field,value){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.pnj_importants[index]){
+      campaign.pnj_importants[index][field]=value
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  addTagToPNJ(pnjIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.pnj_importants[pnjIndex]) {
-      if (!campaign.pnj_importants[pnjIndex].tags.includes(tag)) {
-        campaign.pnj_importants[pnjIndex].tags.push(tag);
-        this.saveCampaign();
-        return true;
+  addTagToPNJ(pnjIndex,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.pnj_importants[pnjIndex]){
+      if(!campaign.pnj_importants[pnjIndex].tags.includes(tag)){
+        campaign.pnj_importants[pnjIndex].tags.push(tag)
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  removeTagFromPNJ(pnjIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.pnj_importants[pnjIndex]) {
-      campaign.pnj_importants[pnjIndex].tags = campaign.pnj_importants[pnjIndex].tags.filter(t => t !== tag);
-      this.saveCampaign();
-      return true;
+  removeTagFromPNJ(pnjIndex,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.pnj_importants[pnjIndex]){
+      campaign.pnj_importants[pnjIndex].tags=campaign.pnj_importants[pnjIndex].tags.filter(t=>t!==tag)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  deletePNJ(index) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.pnj_importants[index]) {
-      campaign.pnj_importants.splice(index, 1);
-      this.saveCampaign();
-      return true;
+  deletePNJ(index){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.pnj_importants[index]){
+      campaign.pnj_importants.splice(index,1)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  // Lieux
-  addLieu() {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      campaign.lieux_importants.push({
-        nom: "Nouveau lieu",
-        description: "",
-        tags: [],
-        priorite: 5
-      });
-      this.saveCampaign();
-      return true;
+  // === Lieux ===
+  addLieu(){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      campaign.lieux_importants.push({nom:"Nouveau lieu",description:"",tags:[],priorite:5})
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  updateLieu(index, field, value) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.lieux_importants[index]) {
-      campaign.lieux_importants[index][field] = value;
-      this.saveCampaign();
-      return true;
+  updateLieu(index,field,value){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.lieux_importants[index]){
+      campaign.lieux_importants[index][field]=value
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  addTagToLieu(lieuIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.lieux_importants[lieuIndex]) {
-      if (!campaign.lieux_importants[lieuIndex].tags.includes(tag)) {
-        campaign.lieux_importants[lieuIndex].tags.push(tag);
-        this.saveCampaign();
-        return true;
+  addTagToLieu(lieuIndex,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.lieux_importants[lieuIndex]){
+      if(!campaign.lieux_importants[lieuIndex].tags.includes(tag)){
+        campaign.lieux_importants[lieuIndex].tags.push(tag)
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  removeTagFromLieu(lieuIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.lieux_importants[lieuIndex]) {
-      campaign.lieux_importants[lieuIndex].tags = campaign.lieux_importants[lieuIndex].tags.filter(t => t !== tag);
-      this.saveCampaign();
-      return true;
+  removeTagFromLieu(lieuIndex,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.lieux_importants[lieuIndex]){
+      campaign.lieux_importants[lieuIndex].tags=campaign.lieux_importants[lieuIndex].tags.filter(t=>t!==tag)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  deleteLieu(index) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.lieux_importants[index]) {
-      campaign.lieux_importants.splice(index, 1);
-      this.saveCampaign();
-      return true;
+  deleteLieu(index){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.lieux_importants[index]){
+      campaign.lieux_importants.splice(index,1)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  // Événements
-  addEvenement() {
-    const campaign = this.getCurrentCampaign();
-    if (campaign) {
-      campaign.evenements_cles.push({
-        titre: "Nouvel événement",
-        description: "",
-        consequences: "",
-        personnages_impliques: [],
-        lieux_impliques: [],
-        tags: [],
-        date: new Date().toISOString(),
-        priorite: 5
-      });
-      this.saveCampaign();
-      return true;
+  // === Événements ===
+  addEvenement(){
+    const campaign=this.getCurrentCampaign()
+    if(campaign){
+      campaign.evenements_cles.push({titre:"Nouvel événement",description:"",consequences:"",personnages_impliques:[],lieux_impliques:[],tags:[],date:new Date().toISOString(),priorite:5})
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  updateEvenement(index, field, value) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.evenements_cles[index]) {
-      campaign.evenements_cles[index][field] = value;
-      this.saveCampaign();
-      return true;
+  updateEvenement(index,field,value){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.evenements_cles[index]){
+      campaign.evenements_cles[index][field]=value
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  addTagToEvenement(eventIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.evenements_cles[eventIndex]) {
-      if (!campaign.evenements_cles[eventIndex].tags.includes(tag)) {
-        campaign.evenements_cles[eventIndex].tags.push(tag);
-        this.saveCampaign();
-        return true;
+  addTagToEvenement(index,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.evenements_cles[index]){
+      if(!campaign.evenements_cles[index].tags.includes(tag)){
+        campaign.evenements_cles[index].tags.push(tag)
+        this.saveCampaign()
+        return true
       }
     }
-    return false;
+    return false
   }
 
-  removeTagFromEvenement(eventIndex, tag) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.evenements_cles[eventIndex]) {
-      campaign.evenements_cles[eventIndex].tags = campaign.evenements_cles[eventIndex].tags.filter(t => t !== tag);
-      this.saveCampaign();
-      return true;
+  removeTagFromEvenement(index,tag){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.evenements_cles[index]){
+      campaign.evenements_cles[index].tags=campaign.evenements_cles[index].tags.filter(t=>t!==tag)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
 
-  deleteEvenement(index) {
-    const campaign = this.getCurrentCampaign();
-    if (campaign && campaign.evenements_cles[index]) {
-      campaign.evenements_cles.splice(index, 1);
-      this.saveCampaign();
-      return true;
+  deleteEvenement(index){
+    const campaign=this.getCurrentCampaign()
+    if(campaign && campaign.evenements_cles[index]){
+      campaign.evenements_cles.splice(index,1)
+      this.saveCampaign()
+      return true
     }
-    return false;
+    return false
   }
-  
-  getAvailableTags() {
-  const campaign = this.getCurrentCampaign()
-  // Si les tags disponibles n'existent pas encore, les initialiser
-  if (!campaign.availableTags) {
-    campaign.availableTags = [
-      'forêt', 'ville', 'donjon', 'montagne', 'mer', 'desert',
-      'combat', 'enigme', 'social', 'exploration', 'commerce', 
-      'magie', 'religion', 'politique', 'familial', 'sombre',
-      'tragédie', 'victoire', 'trahison', 'alliance', 'révélation'
-    ]
+
+  getAvailableTags(){
+    const campaign=this.getCurrentCampaign()
+    if(!campaign) return []
+    return [...new Set([...campaign.tags_globaux,
+      ...campaign.pnj_importants.flatMap(p=>p.tags),
+      ...campaign.lieux_importants.flatMap(l=>l.tags),
+      ...campaign.chapitres.flatMap(c=>c.tags),
+      ...campaign.evenements_cles.flatMap(e=>e.tags)
+    ])]
+  }
+
+  setAvailableTags(tags){
+    const campaign=this.getCurrentCampaign()
+    if(!campaign) return false
+    campaign.tags_globaux=tags
     this.saveCampaign()
-  }
-  return campaign.availableTags
-}
-
-setAvailableTags(tags) {
-  const campaign = this.getCurrentCampaign()
-  if (campaign) {
-    campaign.availableTags = tags
-    this.saveCampaign()
+    return true
   }
 }
 
-}
-let memoryManagerInstance = null
-
-export function getMemoryManager() {
-  if (!memoryManagerInstance) {
-    memoryManagerInstance = new MemoryManager()
-  }
+let memoryManagerInstance=null
+export function getMemoryManager(){
+  if(!memoryManagerInstance) memoryManagerInstance=new MemoryManager()
   return memoryManagerInstance
 }
-
 export default MemoryManager
