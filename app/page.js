@@ -20,25 +20,34 @@ export default function Home() {
   }, [messages])
 
   useEffect(() => {
-    const memoryManager = getMemoryManager()
+  const memoryManager = getMemoryManager()
+  async function init() {
+    await memoryManager.loadFromServer() // ⏳ on attend que les sessions du serveur soient chargées
     setCurrentSession(memoryManager.currentSessionId)
-    // On charge les messages de la session courante
-    setMessages(memoryManager.sessions[memoryManager.currentSessionId]?.campaign?.messages || [])
+    setMessages(memoryManager.getSessionMessages()) // ✅ on charge la mémoire séparée
     setIsLoading(false)
-  }, [])
-
-  // ⚡ Version adaptée pour ton SessionManager actuel
-  const handleSessionChange = (sessionId) => {
-    const memoryManager = getMemoryManager()
-    // Sauvegarde messages de la session en cours
-    if (currentSession) {
-      memoryManager.sessions[currentSession].campaign.messages = messages
-    }
-    memoryManager.switchSession(sessionId)
-    setCurrentSession(sessionId)
-    // Charge messages de la nouvelle session
-    setMessages(memoryManager.sessions[sessionId]?.campaign?.messages || [])
   }
+  init()
+}, [])
+
+
+const handleSessionChange = (sessionId) => {
+  const memoryManager = getMemoryManager()
+
+  // 💾 Sauvegarde les messages actuels dans la session en cours
+  if (currentSession) {
+    memoryManager.setSessionMessages(messages, currentSession)
+  }
+
+  // 🔁 Bascule vers la nouvelle session
+  memoryManager.switchSession(sessionId)
+  setCurrentSession(sessionId)
+
+  // 📥 Charge les messages de la nouvelle session
+  const newMessages = memoryManager.getSessionMessages(sessionId)
+  setMessages(newMessages)
+}
+
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isSending) return
@@ -69,12 +78,14 @@ export default function Home() {
       if (data.error) throw new Error(data.error)
 
       if (data.response) {
-        const finalMessages = [...newMessages, { role: 'assistant', content: data.response }]
-        setMessages(finalMessages)
-        if (currentSession) {
-          memoryManager.sessions[currentSession].campaign.messages = finalMessages
-        }
-      }
+  const finalMessages = [...newMessages, { role: 'assistant', content: data.response }]
+  setMessages(finalMessages)
+  if (currentSession) {
+    memoryManager.setSessionMessages(finalMessages, currentSession)
+    await memoryManager.saveToServer() // ☁️ sauvegarde sur le serveur
+  }
+}
+
     } catch (err) {
       console.error(err)
       setError(err.message || 'Erreur de connexion')

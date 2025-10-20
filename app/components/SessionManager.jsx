@@ -17,25 +17,46 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
     setSessions(memoryManager.getSessionsList())
   }
 
-  const createNewSession = () => {
-    if (!newSessionName.trim()) return
-    
-    const memoryManager = getMemoryManager()
-    const sessionId = memoryManager.createNewSession(newSessionName)
-    setNewSessionName('')
-    loadSessions()
-    onSessionChange(sessionId)
-    onClose()
+  const createNewSession = async () => { // ← ajouter async
+  if (!newSessionName.trim()) return
+  
+  const memoryManager = getMemoryManager()
+  const sessionId = memoryManager.createNewSession(newSessionName)
+
+  // ✅ sauvegarde immédiate sur le serveur
+  await memoryManager.saveToServer()
+
+  setNewSessionName('')
+  loadSessions()
+  onSessionChange(sessionId)
+  onClose()
+}
+
+
+  const switchToSession = async (sessionId) => {
+  const memoryManager = getMemoryManager()
+
+  // 1️⃣ sauvegarde les messages de la session actuelle
+  if (memoryManager.currentSessionId) {
+    memoryManager.sessions[memoryManager.currentSessionId].campaign.messages = messages
+    await memoryManager.saveToServer()
   }
 
-  const switchToSession = (sessionId) => {
-    const memoryManager = getMemoryManager()
-    memoryManager.switchSession(sessionId)
-    onSessionChange(sessionId)
-    onClose()
-  }
+  // 2️⃣ changer de session
+  memoryManager.switchSession(sessionId)
 
-  const deleteSession = (sessionId, e) => {
+  // 3️⃣ charger les messages de la nouvelle session
+  setMessages(memoryManager.sessions[sessionId]?.campaign?.messages || [])
+
+  // 4️⃣ notifier le parent
+  onSessionChange(sessionId)
+
+  // 5️⃣ fermer le modal
+  onClose()
+}
+
+
+  const deleteSession = async (sessionId, e) => {
     e.stopPropagation()
     const memoryManager = getMemoryManager()
     const currentSessionId = memoryManager.currentSessionId
@@ -45,6 +66,7 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
 
     // Supprimer la session
     memoryManager.deleteSession(sessionId)
+    await memoryManager.saveToServer()
 
     // Recharger la liste mise à jour
     const updatedSessions = memoryManager.getSessionsList()
@@ -106,7 +128,7 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
               sessions.map((session) => (
                 <div
                   key={session.id}
-                  onClick={() => switchToSession(session.id)}
+                  onClick={async () => await switchToSession(session.id)}
                   className="p-3 bg-gray-700 rounded hover:bg-gray-600 cursor-pointer flex justify-between items-center"
                 >
                   <div className="flex-1">
