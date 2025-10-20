@@ -103,33 +103,33 @@ export default function Home() {
       <div className="absolute inset-0 bg-black bg-opacity-60"></div>
 
       {/* Maître du Donjon */}
-      <div className="absolute left-4 bottom-0 flex flex-col items-center z-10">
+      <div className="absolute left-2 sm:left-4 bottom-0 flex flex-col items-center z-10">
         <img
           src="/images/md-ombre.png"
           alt="Maître du donjon"
-          className="w-48 opacity-90"
+          className="w-32 sm:w-48 opacity-90"
         />
         <div className="relative">
           <img
             src="/images/cristal.png"
             alt="Cristal"
-            className="w-12 animate-pulse-smooth absolute bottom-10 left-1/2 -translate-x-1/2"
+            className="w-8 sm:w-12 animate-pulse-smooth absolute bottom-10 left-1/2 -translate-x-1/2"
           />
         </div>
       </div>
 
       {/* Contenu principal */}
-      <div className="relative z-20 max-w-4xl mx-auto p-8 pt-16">
-        <header className="flex justify-between items-center mb-6">
-          <div className="flex items-center gap-4">
-            <h1 className="text-3xl font-bold text-yellow-400 drop-shadow-lg">
+      <div className="relative z-20 w-full max-w-full sm:max-w-4xl mx-auto p-4 sm:p-8 pt-16">
+        <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 sm:mb-6 gap-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
+            <h1 className="text-2xl sm:text-3xl font-bold text-yellow-400 drop-shadow-lg">
               ⚔️ Aventure JDR
             </h1>
             <div className="text-sm text-gray-300">
               Session: <strong>{getCurrentSessionName()}</strong>
             </div>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-2 sm:gap-3">
             <button
               onClick={() => setIsSessionsOpen(true)}
               className="bg-yellow-700 hover:bg-yellow-800 border border-yellow-400 px-4 py-2 rounded shadow-md transition"
@@ -147,20 +147,23 @@ export default function Home() {
 
         {/* Parchemin */}
         <div
-          className="rounded-2xl border border-yellow-900 bg-cover bg-center shadow-inner relative"
+          className="rounded-2xl border border-yellow-900 bg-cover bg-center shadow-inner relative w-full"
           style={{
             backgroundImage: "url('/images/parchemin.png')",
             backgroundSize: 'cover',
           }}
         >
-          <div ref={chatRef} className="space-y-4 mb-4 overflow-auto max-h-[60vh] p-6">
+          <div
+            ref={chatRef}
+            className="space-y-4 mb-4 overflow-auto max-h-[50vh] sm:max-h-[60vh] p-4 sm:p-6"
+          >
             {messages.map((message, index) => (
               <div
                 key={index}
-                className={`p-4 rounded-lg ${
+                className={`p-3 rounded-lg break-words ${
                   message.role === 'user'
-                    ? 'bg-yellow-800/80 text-white ml-8'
-                    : 'bg-gray-800/80 text-gray-200 mr-8'
+                    ? 'bg-yellow-800/80 text-white ml-2 sm:ml-8'
+                    : 'bg-gray-800/80 text-gray-200 mr-2 sm:mr-8'
                 }`}
               >
                 {message.content}
@@ -169,24 +172,24 @@ export default function Home() {
           </div>
 
           {error && (
-            <div className="bg-red-800 p-3 rounded-lg mx-4 mb-4 border border-red-400">
+            <div className="bg-red-800 p-3 rounded-lg mx-2 sm:mx-4 mb-4 border border-red-400">
               ❌ {error}
             </div>
           )}
 
-          <div className="flex gap-2 p-4">
+          <div className="flex flex-col sm:flex-row gap-2 p-2 sm:p-4">
             <input
               type="text"
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
               placeholder="Votre action..."
-              className="flex-1 p-3 bg-gray-900/60 border border-yellow-900 rounded-lg text-white placeholder-gray-400"
+              className="flex-1 p-3 bg-gray-900/60 border border-yellow-900 rounded-lg text-white placeholder-gray-400 w-full"
             />
             <button
               onClick={sendMessage}
               disabled={isSending}
-              className="bg-green-700 hover:bg-green-800 border border-green-400 px-6 py-3 rounded-lg disabled:opacity-50 shadow-lg transition"
+              className="bg-green-700 hover:bg-green-800 border border-green-400 px-6 py-3 rounded-lg disabled:opacity-50 shadow-lg transition w-full sm:w-auto"
             >
               {isSending ? '⏳...' : 'Envoyer'}
             </button>
@@ -196,13 +199,17 @@ export default function Home() {
           <img
             src="/images/bougie.gif"
             alt="Bougie"
-            className="absolute top-2 right-4 w-10"
+            className="absolute top-2 right-2 sm:right-4 w-8 sm:w-10"
           />
         </div>
       </div>
 
       <MemoryManager isOpen={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
-      <SessionManager isOpen={isSessionsOpen} onClose={() => setIsSessionsOpen(false)} onSessionChange={handleSessionChange} />
+      <SessionManager
+        isOpen={isSessionsOpen}
+        onClose={() => setIsSessionsOpen(false)}
+        onSessionChange={handleSessionChange}
+      />
     </div>
   )
 }
