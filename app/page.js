@@ -21,14 +21,28 @@ export default function Home() {
 
   useEffect(() => {
   const memoryManager = getMemoryManager()
+
   async function init() {
-    await memoryManager.loadFromServer() // ⏳ on attend que les sessions du serveur soient chargées
+    try {
+      // 1) on attend que le MemoryManager charge les sessions depuis le serveur
+      await memoryManager.loadFromServer()
+    } catch (err) {
+      // Si la requête échoue, on lève juste un avertissement et on continue avec le local
+      console.warn('Échec chargement serveur, utilisation du local:', err)
+    }
+
+    // 2) une fois chargé (ou échec), on met à jour l'état
     setCurrentSession(memoryManager.currentSessionId)
-    setMessages(memoryManager.getSessionMessages()) // ✅ on charge la mémoire séparée
+    // utilise la méthode officielle pour récupérer les messages de la session
+    setMessages(memoryManager.getSessionMessages() || [])
+
+    // 3) on arrête l'écran de chargement
     setIsLoading(false)
   }
+
   init()
 }, [])
+
 
 
 const handleSessionChange = (sessionId) => {
