@@ -1,73 +1,63 @@
-// app/api/sessions/route.js
-import fs from 'fs/promises'
-import path from 'path'
+import { PrismaClient } from '@prisma/client'
 
-const DATA_FILE = path.resolve('./sessionsData.json')
+const prisma = new PrismaClient()
 
-// Lecture asynchrone
-const readData = async () => {
+// GET /api/sessions → récupère toutes les sessions
+export async function GET() {
   try {
-    // Si le fichier n'existe pas, on le crée avec des données vides
-    await fs.access(DATA_FILE).catch(async () => {
-      await fs.writeFile(
-        DATA_FILE,
-        JSON.stringify({ sessions: {}, sessionChats: {}, currentSessionId: null }, null, 2)
-      )
+    const sessions = await prisma.session.findMany({
+      orderBy: { lastAccessed: 'desc' },
     })
 
-    const raw = await fs.readFile(DATA_FILE, 'utf-8')
-    return JSON.parse(raw)
+    return new Response(JSON.stringify({ ok: true, sessions }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   } catch (err) {
     console.error('Erreur lecture sessions:', err)
-    return { sessions: {}, sessionChats: {}, currentSessionId: null }
+    return new Response(JSON.stringify({ ok: false, error: err.message }), { status: 500 })
   }
 }
 
-// Écriture asynchrone
-const saveData = async (data) => {
-  try {
-    await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2))
-  } catch (err) {
-    console.error('Erreur sauvegarde sessions:', err)
-  }
-}
-
-// Sauvegarde partielle : ne met à jour que les sessions reçues
-const savePartial = async (partial) => {
-  const currentData = await readData()
-
-  if (partial.sessions) {
-    currentData.sessions = { ...currentData.sessions, ...partial.sessions }
-  }
-  if (partial.sessionChats) {
-    currentData.sessionChats = { ...currentData.sessionChats, ...partial.sessionChats }
-  }
-  if (partial.currentSessionId) {
-    currentData.currentSessionId = partial.currentSessionId
-  }
-
-  await saveData(currentData)
-  return currentData
-}
-
-// GET /api/sessions → renvoie toutes les sessions
-export async function GET(req) {
-  const data = await readData()
-  return new Response(JSON.stringify(data), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })
-}
-
-// POST /api/sessions → sauvegarde partielle ou complète
+// POST /api/sessions → création ou mise à jour
 export async function POST(req) {
   try {
     const body = await req.json()
-    const updatedData = await savePartial(body)
 
-    return new Response(JSON.stringify({ ok: true, data: updatedData }), { status: 200 })
+    const session = body.id
+      ? await prisma.session.update({
+          where: { id: body.id },
+          data: {
+            name: body.name,
+            lastAccessed: new Date(),
+            campaignData: body.campaignData,
+          },
+        })
+      : await prisma.session.create({
+          data: {
+            name: body.name || 'Nouvelle session',
+            campaignData: body.campaignData || {},
+          },
+        })
+
+    return new Response(JSON.stringify({ ok: true, session }), { status: 200 })
   } catch (err) {
     console.error('Erreur POST sessions:', err)
+    return new Response(JSON.stringify({ ok: false, error: err.message }), { status: 500 })
+  }
+}
+
+// DELETE /api/sessions → suppression d’une session
+export async function DELETE(req) {
+  try {
+    const { id } = await req.json()
+    if (!id) throw new Error('ID manquant')
+
+    await prisma.session.delete({ where: { id } })
+
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  } catch (err) {
+    console.error('Erreur DELETE sessions:', err)
     return new Response(JSON.stringify({ ok: false, error: err.message }), { status: 500 })
   }
 }

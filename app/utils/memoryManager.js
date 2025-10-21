@@ -1,3 +1,46 @@
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
+
+async function loadSessionsFromDB() {
+  const sessionsRaw = await prisma.session.findMany();
+  const sessions = {};
+  const sessionChats = {};
+
+  sessionsRaw.forEach(s => {
+    const campaign = JSON.parse(s.campaign || '{}');
+    sessions[s.id] = {
+      id: s.id,
+      name: s.name,
+      campaign: campaign,
+      createdAt: s.createdAt,
+      lastAccessed: s.lastAccessed
+    };
+    sessionChats[s.id] = campaign.chats || [];
+  });
+
+  return { sessions, sessionChats };
+}
+
+async function saveSessionToDB(sessionId, sessionData, chatData) {
+  const campaignWithChats = { ...sessionData.campaign, chats: chatData };
+
+  await prisma.session.upsert({
+    where: { id: sessionId },
+    update: {
+      name: sessionData.name,
+      campaign: JSON.stringify(campaignWithChats),
+      lastAccessed: new Date()
+    },
+    create: {
+      id: sessionId,
+      name: sessionData.name,
+      campaign: JSON.stringify(campaignWithChats),
+      createdAt: new Date(),
+      lastAccessed: new Date()
+    }
+  });
+}
+
 class MemoryManager {
   constructor() {
     this.sessions = {}
@@ -17,18 +60,15 @@ class MemoryManager {
   }
 
   async loadFromServer() {
-    try {
-      const response = await fetch('/api/getSessions')
-      if (response.ok) {
-        const data = await response.json()
-        if (data.sessions) this.sessions = data.sessions
-        if (data.sessionChats) this.sessionChats = data.sessionChats
-        if (data.currentSessionId) this.currentSessionId = data.currentSessionId
-      }
-    } catch (error) {
-      console.warn("⚠️ Impossible de charger les sessions depuis le serveur:", error)
-    }
+  try {
+    const { sessions, sessionChats } = await loadSessionsFromDB();
+    this.sessions = sessions;
+    this.sessionChats = sessionChats;
+    this.currentSessionId = Object.keys(this.sessions)[0] || this.createNewSession();
+  } catch (err) {
+    console.warn("⚠️ Impossible de charger les sessions depuis SQLite:", err);
   }
+}
 
   loadSessions() {
     if (typeof window !== 'undefined') {
@@ -75,22 +115,18 @@ class MemoryManager {
   }
 
   async saveToServer() {
-    try {
-      if (!this.currentSessionId) return
-      const payload = {
-        currentSessionId: this.currentSessionId,
-        sessions: this.sessions,
-        sessionChats: this.sessionChats
-      }
-      await fetch('/api/saveSession', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-    } catch (error) {
-      console.error("❌ Erreur sauvegarde serveur:", error)
-    }
+  if (!this.currentSessionId) return;
+  try {
+    await saveSessionToDB(
+      this.currentSessionId,
+      this.sessions[this.currentSessionId],
+      this.sessionChats[this.currentSessionId]
+    );
+  } catch (err) {
+    console.error("❌ Erreur sauvegarde SQLite:", err);
   }
+}
+
 
   createNewSession(name = "Nouvelle Aventure") {
     const sessionId = 'session_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2, 9))
