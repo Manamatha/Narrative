@@ -2,10 +2,16 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-// GET /api/sessions → récupère toutes les sessions
-export async function GET() {
+// GET /api/sessions -> recupère les sessions de l'utilisateur
+export async function GET(req) {
   try {
+    const userId = req.headers.get('X-User-ID')
+    if (!userId) {
+      return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
+    }
+
     const sessions = await prisma.session.findMany({
+      where: { userId },
       orderBy: { lastAccessed: 'desc' },
     })
 
@@ -19,10 +25,14 @@ export async function GET() {
   }
 }
 
-// POST /api/sessions → création ou mise à jour
+// POST /api/sessions -> creation ou mise a jour
 export async function POST(req) {
   try {
     const body = await req.json()
+    const userId = req.headers.get('X-User-ID')
+    if (!userId) {
+      return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
+    }
 
     const session = body.id
       ? await prisma.session.update({
@@ -30,13 +40,14 @@ export async function POST(req) {
           data: {
             name: body.name,
             lastAccessed: new Date(),
-            campaignData: body.campaignData,
+            campaign: body.campaign,
           },
         })
       : await prisma.session.create({
           data: {
+            userId,
             name: body.name || 'Nouvelle session',
-            campaignData: body.campaignData || {},
+            campaign: body.campaign || '{}',
           },
         })
 
@@ -47,11 +58,22 @@ export async function POST(req) {
   }
 }
 
-// DELETE /api/sessions → suppression d’une session
+// DELETE /api/sessions -> suppression d'une session
 export async function DELETE(req) {
   try {
-    const { id } = await req.json()
-    if (!id) throw new Error('ID manquant')
+    const body = await req.json()
+    const { id } = body
+    const userId = req.headers.get('X-User-ID')
+    
+    if (!id || !userId) {
+      return new Response(JSON.stringify({ ok: false, error: 'ID ou userId manquant' }), { status: 400 })
+    }
+
+    // Verifier que la session appartient a l'utilisateur
+    const session = await prisma.session.findUnique({ where: { id } })
+    if (!session || session.userId !== userId) {
+      return new Response(JSON.stringify({ ok: false, error: 'Acces refuse' }), { status: 403 })
+    }
 
     await prisma.session.delete({ where: { id } })
 

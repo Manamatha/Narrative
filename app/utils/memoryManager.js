@@ -1,48 +1,94 @@
 import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
-async function loadSessionsFromDB() {
-  const sessionsRaw = await prisma.session.findMany();
-  const sessions = {};
-  const sessionChats = {};
-
-  sessionsRaw.forEach(s => {
-    const campaign = JSON.parse(s.campaign || '{}');
-    sessions[s.id] = {
-      id: s.id,
-      name: s.name,
-      campaign: campaign,
-      createdAt: s.createdAt,
-      lastAccessed: s.lastAccessed
-    };
-    sessionChats[s.id] = campaign.chats || [];
-  });
-
-  return { sessions, sessionChats };
+// Récupère la clé utilisateur unique depuis l'API
+async function getUserId() {
+  if (typeof window === 'undefined') return null;
+  
+  try {
+    const res = await fetch('/api/config');
+    const { USER_KEY } = await res.json();
+    return USER_KEY;
+  } catch (err) {
+    console.warn('⚠️ Impossible de charger USER_KEY:', err);
+    return 'user_default';
+  }
 }
 
-async function saveSessionToDB(sessionId, sessionData, chatData) {
-  const campaignWithChats = { ...sessionData.campaign, chats: chatData };
+// Crée l'utilisateur s'il n'existe pas
+async function ensureUserExists(userId) {
+  try {
+    await prisma.user.upsert({
+      where: { id: userId },
+      update: {},
+      create: { id: userId }
+    });
+  } catch (err) {
+    console.warn("⚠️ Erreur création utilisateur:", err);
+  }
+}
 
-  await prisma.session.upsert({
-    where: { id: sessionId },
-    update: {
-      name: sessionData.name,
-      campaign: JSON.stringify(campaignWithChats),
-      lastAccessed: new Date()
-    },
-    create: {
-      id: sessionId,
-      name: sessionData.name,
-      campaign: JSON.stringify(campaignWithChats),
-      createdAt: new Date(),
-      lastAccessed: new Date()
-    }
-  });
+async function loadSessionsFromDB(userId) {
+  if (!userId) return { sessions: {}, sessionChats: {} };
+  
+  try {
+    const sessionsRaw = await prisma.session.findMany({
+      where: { userId }
+    });
+    const sessions = {};
+    const sessionChats = {};
+
+    sessionsRaw.forEach(s => {
+      const campaign = JSON.parse(s.campaign || '{}');
+      sessions[s.id] = {
+        id: s.id,
+        name: s.name,
+        campaign: campaign,
+        createdAt: s.createdAt,
+        lastAccessed: s.lastAccessed
+      };
+      sessionChats[s.id] = campaign.chats || [];
+    });
+
+    return { sessions, sessionChats };
+  } catch (err) {
+    console.warn("⚠️ Erreur chargement sessions:", err);
+    return { sessions: {}, sessionChats: {} };
+  }
+}
+
+async function saveSessionToDB(userId, sessionId, sessionData, chatData) {
+  if (!userId) return;
+  
+  try {
+    await ensureUserExists(userId);
+    
+    const campaignWithChats = { ...sessionData.campaign, chats: chatData };
+
+    await prisma.session.upsert({
+      where: { id: sessionId },
+      update: {
+        name: sessionData.name,
+        campaign: JSON.stringify(campaignWithChats),
+        lastAccessed: new Date()
+      },
+      create: {
+        id: sessionId,
+        userId,
+        name: sessionData.name,
+        campaign: JSON.stringify(campaignWithChats),
+        createdAt: new Date(),
+        lastAccessed: new Date()
+      }
+    });
+  } catch (err) {
+    console.error("❌ Erreur sauvegarde session:", err);
+  }
 }
 
 class MemoryManager {
   constructor() {
+    this.userId = null // sera initialisé dans loadFromServer()
     this.sessions = {}
     this.currentSessionId = null
     this.sessionChats = {}
@@ -56,19 +102,24 @@ class MemoryManager {
     this.saveDelay = 1000 // 1s de délai pour batcher les sauvegardes
 
     this.loadSessions()
-    this.loadFromServer()
   }
 
   async loadFromServer() {
-  try {
-    const { sessions, sessionChats } = await loadSessionsFromDB();
-    this.sessions = sessions;
-    this.sessionChats = sessionChats;
-    this.currentSessionId = Object.keys(this.sessions)[0] || this.createNewSession();
-  } catch (err) {
-    console.warn("⚠️ Impossible de charger les sessions depuis SQLite:", err);
+    try {
+      // 1. Charger l'USER_KEY depuis le serveur
+      if (!this.userId) {
+        this.userId = await getUserId();
+      }
+      
+      // 2. Charger les sessions depuis la BD
+      const { sessions, sessionChats } = await loadSessionsFromDB(this.userId);
+      this.sessions = sessions;
+      this.sessionChats = sessionChats;
+      this.currentSessionId = Object.keys(this.sessions)[0] || this.createNewSession();
+    } catch (err) {
+      console.warn("⚠️ Impossible de charger les sessions depuis la BD:", err);
+    }
   }
-}
 
   loadSessions() {
     if (typeof window !== 'undefined') {
@@ -115,15 +166,20 @@ class MemoryManager {
   }
 
   async saveToServer() {
-  if (!this.currentSessionId) return;
+  if (!this.userId) return;
   try {
-    await saveSessionToDB(
-      this.currentSessionId,
-      this.sessions[this.currentSessionId],
-      this.sessionChats[this.currentSessionId]
-    );
+    // Sauvegarder TOUTES les sessions, pas juste l'actuelle
+    const sessionIds = Object.keys(this.sessions);
+    for (const sessionId of sessionIds) {
+      await saveSessionToDB(
+        this.userId,
+        sessionId,
+        this.sessions[sessionId],
+        this.sessionChats[sessionId]
+      );
+    }
   } catch (err) {
-    console.error("❌ Erreur sauvegarde SQLite:", err);
+    console.error("❌ Erreur sauvegarde session:", err);
   }
 }
 
@@ -191,6 +247,24 @@ class MemoryManager {
         this.currentSessionId = Object.keys(this.sessions)[0]
       }
       this.saveAllData()
+      // Supprimer aussi du serveur
+      this.deleteSessionFromServer(sessionId)
+    }
+  }
+
+  async deleteSessionFromServer(sessionId) {
+    if (!this.userId) return
+    try {
+      await fetch('/api/sessions', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-ID': this.userId
+        },
+        body: JSON.stringify({ id: sessionId })
+      })
+    } catch (err) {
+      console.error("❌ Erreur suppression session serveur:", err)
     }
   }
 
