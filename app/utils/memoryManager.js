@@ -12,6 +12,15 @@ class MemoryManager {
     this.sessions = {}
     this.sessionChats = {}
     this.currentSessionId = null
+
+    // 🧠 CACHE ET MÉMOIRE
+    this.tagsCacheTimestamp = 0
+    this.tagsCache = {}
+    this.importantMemory = {} // Stocke les éléments importants par sessionId
+
+    // 🔄 THROTTLING DES TAGS - Évite de relire les mêmes tags trop souvent
+    this.tagThrottleMap = {} // { sessionId: { tagName: { lastReadAt, readCount } } }
+    this.tagThrottleInterval = 8 // Lire les infos tous les 8 échanges
   }
 
   async _getPrismaClient() {
@@ -46,14 +55,21 @@ class MemoryManager {
           }
         })
       } else {
-        const res = await fetch('/api/sessions')
+        // Client-side: charger depuis l'API
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
+
+        const res = await fetch('/api/sessions', {
+          headers: {
+            ...(token && { 'Authorization': `Bearer ${token}` })
+          }
+        })
         const data = await res.json()
 
         if (data.ok && Array.isArray(data.sessions)) {
           data.sessions.forEach((session) => {
             try {
-              const campaign = typeof session.campaign === 'string' 
-                ? JSON.parse(session.campaign) 
+              const campaign = typeof session.campaign === 'string'
+                ? JSON.parse(session.campaign)
                 : session.campaign
               this.sessions[session.id] = {
                 id: session.id,
@@ -78,6 +94,57 @@ class MemoryManager {
       }
     } catch (err) {
       console.error('loadFromServer error:', err)
+    }
+  }
+
+  // Synchroniser les sessions depuis le serveur (pour multi-appareils)
+  async syncFromServer() {
+    if (isServer) return
+    try {
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
+
+      const res = await fetch('/api/sessions', {
+        headers: {
+          ...(token && { 'Authorization': `Bearer ${token}` })
+        }
+      })
+      const data = await res.json()
+
+      if (data.ok && Array.isArray(data.sessions)) {
+        // Mettre à jour les sessions existantes et ajouter les nouvelles
+        data.sessions.forEach((session) => {
+          try {
+            const campaign = typeof session.campaign === 'string'
+              ? JSON.parse(session.campaign)
+              : session.campaign
+
+            // Vérifier si la session a changé
+            const existing = this.sessions[session.id]
+            if (!existing || new Date(session.lastAccessed) > new Date(existing.lastAccessed)) {
+              this.sessions[session.id] = {
+                id: session.id,
+                name: session.name,
+                campaign,
+                createdAt: session.createdAt,
+                lastAccessed: session.lastAccessed
+              }
+            }
+          } catch (e) {
+            console.warn('Failed to parse campaign for session', session.id)
+          }
+        })
+
+        // Supprimer les sessions qui n'existent plus sur le serveur
+        const serverIds = new Set(data.sessions.map(s => s.id))
+        Object.keys(this.sessions).forEach(id => {
+          if (!serverIds.has(id)) {
+            delete this.sessions[id]
+            delete this.sessionChats[id]
+          }
+        })
+      }
+    } catch (err) {
+      console.error('syncFromServer error:', err)
     }
   }
 
@@ -168,13 +235,19 @@ class MemoryManager {
           }
         })
       } else {
-        const response = await fetch('/api/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+        // Client-side: utiliser la nouvelle API PUT /api/sessions/[id]
+        // Récupérer le token depuis localStorage
+        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
+
+        const response = await fetch(`/api/sessions/${sessionId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { 'Authorization': `Bearer ${token}` })
+          },
           body: JSON.stringify({
-            id: sessionId,
             name: payload.name,
-            campaign: payload.campaign
+            campaign: JSON.stringify(payload.campaign)
           })
         })
         if (!response.ok) {
@@ -187,15 +260,19 @@ class MemoryManager {
   }
 
   saveCampaign() {
+    // Sauvegarder immédiatement (pas d'attente)
     if (this.currentSessionId) {
-      this.saveSessionToServer(this.currentSessionId).catch(() => {})
+      this.saveSessionToServer(this.currentSessionId).catch((err) => {
+        console.error('Erreur sauvegarde:', err)
+      })
     }
   }
 
   updateCampaign(updatedCampaign) {
     if (this.currentSessionId && this.sessions[this.currentSessionId]) {
       this.sessions[this.currentSessionId].campaign = updatedCampaign
-      this.saveCampaign()
+      // Sauvegarder immédiatement
+      this.saveSessionToServer(this.currentSessionId).catch(() => {})
     }
   }
 
@@ -222,6 +299,16 @@ class MemoryManager {
     const ch = (c.chapitres || []).find((x) => x.id === id)
     if (!ch) return false
     ch[field] = value
+
+    // 🧠 Track la modification du chapitre
+    this.trackImportantElement('chapitres', ch.titre, {
+      resume: ch.resume,
+      tags: ch.tags
+    })
+
+    // 🔓 Forcer la lecture des tags du chapitre modifié
+    this.forceReadElementTags('chapitre', ch.titre)
+
     this.saveCampaign()
     return true
   }
@@ -234,6 +321,13 @@ class MemoryManager {
     ch.tags = ch.tags || []
     if (!ch.tags.includes(tag)) {
       ch.tags.push(tag)
+
+      // 🧠 Track la modification du chapitre (ajout de tag)
+      this.trackImportantElement('chapitres', ch.titre, {
+        resume: ch.resume,
+        tags: ch.tags
+      })
+
       this.saveCampaign()
       return true
     }
@@ -246,6 +340,13 @@ class MemoryManager {
     const ch = (c.chapitres || []).find((x) => x.id === chapitreId)
     if (!ch) return false
     ch.tags = (ch.tags || []).filter((t) => t !== tag)
+
+    // 🧠 Track la modification du chapitre (suppression de tag)
+    this.trackImportantElement('chapitres', ch.titre, {
+      resume: ch.resume,
+      tags: ch.tags
+    })
+
     this.saveCampaign()
     return true
   }
@@ -283,7 +384,25 @@ class MemoryManager {
   updatePNJ(index, field, value) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.pnj_importants || [])[index]) return false
-    c.pnj_importants[index][field] = value
+    const pnj = c.pnj_importants[index]
+    pnj[field] = value
+
+    // 🧠 Track la modification du PNJ
+    this.trackImportantElement('pnj', pnj.nom, {
+      role: pnj.role,
+      description: pnj.description,
+      emotion: pnj.emotion,
+      caractere: pnj.caractere,
+      valeurs: pnj.valeurs,
+      peurs: pnj.peurs,
+      desirs: pnj.desirs,
+      histoire: pnj.histoire,
+      tags: pnj.tags
+    })
+
+    // 🔓 Forcer la lecture des tags du PNJ modifié
+    this.forceReadElementTags('pnj', pnj.nom)
+
     this.saveCampaign()
     return true
   }
@@ -295,6 +414,20 @@ class MemoryManager {
     p.tags = p.tags || []
     if (!p.tags.includes(tag)) {
       p.tags.push(tag)
+
+      // 🧠 Track la modification du PNJ (ajout de tag)
+      this.trackImportantElement('pnj', p.nom, {
+        role: p.role,
+        description: p.description,
+        emotion: p.emotion,
+        caractere: p.caractere,
+        valeurs: p.valeurs,
+        peurs: p.peurs,
+        desirs: p.desirs,
+        histoire: p.histoire,
+        tags: p.tags
+      })
+
       this.saveCampaign()
       return true
     }
@@ -304,7 +437,22 @@ class MemoryManager {
   removeTagFromPNJ(pnjIndex, tag) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.pnj_importants || [])[pnjIndex]) return false
-    c.pnj_importants[pnjIndex].tags = (c.pnj_importants[pnjIndex].tags || []).filter((t) => t !== tag)
+    const p = c.pnj_importants[pnjIndex]
+    p.tags = (p.tags || []).filter((t) => t !== tag)
+
+    // 🧠 Track la modification du PNJ (suppression de tag)
+    this.trackImportantElement('pnj', p.nom, {
+      role: p.role,
+      description: p.description,
+      emotion: p.emotion,
+      caractere: p.caractere,
+      valeurs: p.valeurs,
+      peurs: p.peurs,
+      desirs: p.desirs,
+      histoire: p.histoire,
+      tags: p.tags
+    })
+
     this.saveCampaign()
     return true
   }
@@ -334,7 +482,18 @@ class MemoryManager {
   updateLieu(index, field, value) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.lieux_importants || [])[index]) return false
-    c.lieux_importants[index][field] = value
+    const lieu = c.lieux_importants[index]
+    lieu[field] = value
+
+    // 🧠 Track la modification du lieu
+    this.trackImportantElement('lieux', lieu.nom, {
+      description: lieu.description,
+      tags: lieu.tags
+    })
+
+    // 🔓 Forcer la lecture des tags du lieu modifié
+    this.forceReadElementTags('lieu', lieu.nom)
+
     this.saveCampaign()
     return true
   }
@@ -346,6 +505,13 @@ class MemoryManager {
     l.tags = l.tags || []
     if (!l.tags.includes(tag)) {
       l.tags.push(tag)
+
+      // 🧠 Track la modification du lieu (ajout de tag)
+      this.trackImportantElement('lieux', l.nom, {
+        description: l.description,
+        tags: l.tags
+      })
+
       this.saveCampaign()
       return true
     }
@@ -355,7 +521,15 @@ class MemoryManager {
   removeTagFromLieu(lieuIndex, tag) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.lieux_importants || [])[lieuIndex]) return false
-    c.lieux_importants[lieuIndex].tags = (c.lieux_importants[lieuIndex].tags || []).filter((t) => t !== tag)
+    const l = c.lieux_importants[lieuIndex]
+    l.tags = (l.tags || []).filter((t) => t !== tag)
+
+    // 🧠 Track la modification du lieu (suppression de tag)
+    this.trackImportantElement('lieux', l.nom, {
+      description: l.description,
+      tags: l.tags
+    })
+
     this.saveCampaign()
     return true
   }
@@ -389,7 +563,21 @@ class MemoryManager {
   updateEvenement(index, field, value) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.evenements_cles || [])[index]) return false
-    c.evenements_cles[index][field] = value
+    const evt = c.evenements_cles[index]
+    evt[field] = value
+
+    // 🧠 Track la modification de l'événement
+    this.trackImportantElement('evenements', evt.titre, {
+      description: evt.description,
+      consequences: evt.consequences,
+      personnages_impliques: evt.personnages_impliques,
+      lieux_impliques: evt.lieux_impliques,
+      tags: evt.tags
+    })
+
+    // 🔓 Forcer la lecture des tags de l'événement modifié
+    this.forceReadElementTags('evenement', evt.titre)
+
     this.saveCampaign()
     return true
   }
@@ -401,6 +589,16 @@ class MemoryManager {
     e.tags = e.tags || []
     if (!e.tags.includes(tag)) {
       e.tags.push(tag)
+
+      // 🧠 Track la modification de l'événement (ajout de tag)
+      this.trackImportantElement('evenements', e.titre, {
+        description: e.description,
+        consequences: e.consequences,
+        personnages_impliques: e.personnages_impliques,
+        lieux_impliques: e.lieux_impliques,
+        tags: e.tags
+      })
+
       this.saveCampaign()
       return true
     }
@@ -410,7 +608,18 @@ class MemoryManager {
   removeTagFromEvenement(index, tag) {
     const c = this.getCurrentCampaign()
     if (!c || !(c.evenements_cles || [])[index]) return false
-    c.evenements_cles[index].tags = (c.evenements_cles[index].tags || []).filter((t) => t !== tag)
+    const e = c.evenements_cles[index]
+    e.tags = (e.tags || []).filter((t) => t !== tag)
+
+    // 🧠 Track la modification de l'événement (suppression de tag)
+    this.trackImportantElement('evenements', e.titre, {
+      description: e.description,
+      consequences: e.consequences,
+      personnages_impliques: e.personnages_impliques,
+      lieux_impliques: e.lieux_impliques,
+      tags: e.tags
+    })
+
     this.saveCampaign()
     return true
   }
@@ -442,6 +651,86 @@ class MemoryManager {
     c.tags_globaux = tags
     this.saveCampaign()
     return true
+  }
+
+  // 🔄 Vérifier si un tag doit être lu (throttling)
+  shouldReadTag(tagName) {
+    if (!this.currentSessionId) return true
+
+    if (!this.tagThrottleMap[this.currentSessionId]) {
+      this.tagThrottleMap[this.currentSessionId] = {}
+    }
+
+    const tagInfo = this.tagThrottleMap[this.currentSessionId][tagName]
+
+    // Si jamais lu, lire maintenant
+    if (!tagInfo) {
+      this.tagThrottleMap[this.currentSessionId][tagName] = {
+        lastReadAt: Date.now(),
+        readCount: 1
+      }
+      return true
+    }
+
+    // Si lu récemment (moins de 8 échanges), ne pas relire
+    if (tagInfo.readCount < this.tagThrottleInterval) {
+      tagInfo.readCount++
+      return false
+    }
+
+    // Après 8 échanges, relire et réinitialiser le compteur
+    tagInfo.readCount = 1
+    tagInfo.lastReadAt = Date.now()
+    return true
+  }
+
+  // 🧹 Nettoyer les tags: supprimer les vides et les espaces
+  cleanTags(tags) {
+    if (!Array.isArray(tags)) return []
+
+    return tags
+      .map((tag) => String(tag).trim())
+      .filter((tag) => tag.length > 0)
+  }
+
+  // 🔓 Forcer la lecture d'un tag (pour les modifications)
+  // Quand on modifie un élément, on veut que l'IA relise ses infos
+  forceReadTag(tagName) {
+    if (!this.currentSessionId) return
+
+    if (!this.tagThrottleMap[this.currentSessionId]) {
+      this.tagThrottleMap[this.currentSessionId] = {}
+    }
+
+    // Réinitialiser le compteur pour forcer la lecture au prochain échange
+    this.tagThrottleMap[this.currentSessionId][tagName] = {
+      lastReadAt: Date.now(),
+      readCount: 0 // Forcer la lecture
+    }
+  }
+
+  // 🔓 Forcer la lecture de tous les tags d'un élément
+  forceReadElementTags(elementType, elementName) {
+    const c = this.getCurrentCampaign()
+    if (!c) return
+
+    let tags = []
+    if (elementType === 'pnj') {
+      const pnj = (c.pnj_importants || []).find((p) => p.nom === elementName)
+      tags = pnj?.tags || []
+    } else if (elementType === 'lieu') {
+      const lieu = (c.lieux_importants || []).find((l) => l.nom === elementName)
+      tags = lieu?.tags || []
+    } else if (elementType === 'evenement') {
+      const evt = (c.evenements_cles || []).find((e) => e.titre === elementName)
+      tags = evt?.tags || []
+    } else if (elementType === 'chapitre') {
+      const ch = (c.chapitres || []).find((x) => x.titre === elementName)
+      tags = ch?.tags || []
+    }
+
+    // Forcer la lecture de tous les tags
+    tags.forEach((tag) => this.forceReadTag(tag))
   }
 
   findTagsInMessage(message) {
@@ -490,6 +779,11 @@ class MemoryManager {
     let output = '\n// CONTEXTE RÉCENT:\n'
 
     tags.forEach((tag) => {
+      // 🔄 Vérifier si ce tag doit être lu maintenant (throttling)
+      if (!this.shouldReadTag(tag)) {
+        return // Sauter ce tag, il a été lu récemment
+      }
+
       const lieux = (c.lieux_importants || []).filter(
         (l) => (l.tags || []).includes(tag) || (l.nom || '').toLowerCase().includes(String(tag).toLowerCase())
       )
@@ -589,6 +883,22 @@ class MemoryManager {
         if (changement) {
           pnj.histoire = (pnj.histoire || '') + `\n[${new Date().toISOString()}] ${raison}: ${changement}`
         }
+
+        // 🧠 Track la modification du PNJ par l'IA
+        this.trackImportantElement('pnj', pnj.nom, {
+          role: pnj.role,
+          description: pnj.description,
+          emotion: pnj.emotion,
+          caractere: pnj.caractere,
+          valeurs: pnj.valeurs,
+          peurs: pnj.peurs,
+          desirs: pnj.desirs,
+          histoire: pnj.histoire,
+          tags: pnj.tags
+        })
+
+        // 🔓 Forcer la lecture des tags du PNJ modifié par l'IA
+        this.forceReadElementTags('pnj', pnj.nom)
       }
     })
 
@@ -603,22 +913,37 @@ class MemoryManager {
       if (type === 'CHAPITRE') {
         c.chapitres = c.chapitres || []
         const id = Math.max(0, ...(c.chapitres || []).map((x) => x.id || 0)) + 1
-        c.chapitres.push({
+
+        // 🧹 Nettoyer les tags
+        const cleanedTags = this.cleanTags(data.tags || [])
+
+        const newChapitre = {
           id,
           titre: data.titre,
           resume: data.resume,
-          tags: data.tags || [],
+          tags: cleanedTags,
           date: new Date().toISOString(),
           priorite: 5
+        }
+        c.chapitres.push(newChapitre)
+
+        // 🧠 Track le chapitre dans la mémoire importante
+        this.trackImportantElement('chapitres', data.titre, {
+          resume: data.resume,
+          tags: cleanedTags
         })
       } else if (type === 'PNJ') {
         c.pnj_importants = c.pnj_importants || []
         const existing = (c.pnj_importants || []).find((p) => p.nom === data.nom)
+
+        // 🧹 Nettoyer les tags
+        const cleanedTags = this.cleanTags(data.tags || [])
+
         if (existing) {
           existing.description = data.description
-          existing.tags = data.tags || existing.tags
+          existing.tags = cleanedTags
         } else {
-          c.pnj_importants.push({
+          const newPNJ = {
             nom: data.nom,
             role: data.role,
             description: data.description,
@@ -629,35 +954,72 @@ class MemoryManager {
             desirs: '',
             histoire: '',
             vitesse_evolution: 1.0,
-            tags: data.tags || [],
+            tags: cleanedTags,
             priorite: 5
+          }
+          c.pnj_importants.push(newPNJ)
+
+          // 🧠 Track le PNJ dans la mémoire importante
+          this.trackImportantElement('pnj', data.nom, {
+            role: data.role,
+            description: data.description,
+            emotion: 'C50-A30-P50-H10-R50-J10',
+            caractere: '',
+            valeurs: '',
+            peurs: '',
+            desirs: '',
+            histoire: '',
+            tags: data.tags || []
           })
         }
       } else if (type === 'LIEU') {
         c.lieux_importants = c.lieux_importants || []
         const existing = (c.lieux_importants || []).find((l) => l.nom === data.nom)
+
+        // 🧹 Nettoyer les tags
+        const cleanedTags = this.cleanTags(data.tags || [])
+
         if (existing) {
           existing.description = data.description
-          existing.tags = data.tags || existing.tags
+          existing.tags = cleanedTags
         } else {
           c.lieux_importants.push({
             nom: data.nom,
             description: data.description,
-            tags: data.tags || [],
+            tags: cleanedTags,
             priorite: 5
+          })
+
+          // 🧠 Track le lieu dans la mémoire importante
+          this.trackImportantElement('lieux', data.nom, {
+            description: data.description,
+            tags: cleanedTags
           })
         }
       } else if (type === 'EVENEMENT') {
-        c.evenements_cles = c.evenements_cles || []
-        c.evenements_cles.push({
+        // 🧹 Nettoyer les tags
+        const cleanedTags = this.cleanTags(data.tags || [])
+
+        const newEvenement = {
           titre: data.titre,
           description: data.description,
           consequences: data.consequences,
           personnages_impliques: [],
           lieux_impliques: [],
-          tags: data.tags || [],
+          tags: cleanedTags,
           date: new Date().toISOString(),
           priorite: 5
+        }
+        c.evenements_cles = c.evenements_cles || []
+        c.evenements_cles.push(newEvenement)
+
+        // 🧠 Track l'événement dans la mémoire importante
+        this.trackImportantElement('evenements', data.titre, {
+          description: data.description,
+          consequences: data.consequences,
+          personnages_impliques: [],
+          lieux_impliques: [],
+          tags: cleanedTags
         })
       }
     })
@@ -665,11 +1027,88 @@ class MemoryManager {
     this.saveCampaign()
   }
 
+  // 🧠 TRACKER D'ÉLÉMENTS IMPORTANTS
+  // Enregistre les éléments clés avec TOUTES leurs données pour les retrouver même s'ils sont vieux
+  trackImportantElement(type, name, data = {}) {
+    if (!this.currentSessionId) return
+
+    if (!this.importantMemory[this.currentSessionId]) {
+      this.importantMemory[this.currentSessionId] = {
+        pnj: {},
+        lieux: {},
+        evenements: {},
+        chapitres: {}
+      }
+    }
+
+    const memory = this.importantMemory[this.currentSessionId]
+    const typeKey = type.toLowerCase()
+
+    if (memory[typeKey]) {
+      // Stocker les données complètes de l'élément
+      memory[typeKey][name] = {
+        ...data,
+        lastSeen: new Date().toISOString(),
+        frequency: (memory[typeKey][name]?.frequency || 0) + 1
+      }
+    }
+  }
+
+  // 🔍 RÉCUPÉRER LES ÉLÉMENTS IMPORTANTS
+  getImportantElements(limit = 10) {
+    if (!this.currentSessionId || !this.importantMemory[this.currentSessionId]) {
+      return []
+    }
+
+    const memory = this.importantMemory[this.currentSessionId]
+    const allElements = []
+
+    // Collecter tous les éléments avec leur fréquence
+    Object.entries(memory).forEach(([type, items]) => {
+      Object.entries(items).forEach(([name, data]) => {
+        allElements.push({
+          type,
+          name,
+          frequency: data.frequency || 0,
+          lastSeen: data.lastSeen,
+          ...data
+        })
+      })
+    })
+
+    // Trier par fréquence (décroissant) puis par date
+    return allElements
+      .sort((a, b) => {
+        if (b.frequency !== a.frequency) return b.frequency - a.frequency
+        return new Date(b.lastSeen) - new Date(a.lastSeen)
+      })
+      .slice(0, limit)
+  }
+
   generateOptimizedContext(userMessage, messageCount) {
     const c = this.getCurrentCampaign()
     if (!c) return 'Aucun contexte de campagne.'
 
-    const tagsInMessage = this.findTagsInMessage(userMessage)
+    // 🔍 CACHE DES TAGS: Éviter de rechercher les tags trop souvent
+    if (!this.tagsCacheTimestamp) {
+      this.tagsCacheTimestamp = 0
+      this.tagsCache = {}
+    }
+
+    const now = Date.now()
+    const cacheExpiry = 30000 // 30 secondes
+
+    let tagsInMessage = []
+    if (now - this.tagsCacheTimestamp < cacheExpiry && this.tagsCache[userMessage]) {
+      // Utiliser le cache
+      tagsInMessage = this.tagsCache[userMessage]
+    } else {
+      // Recalculer et mettre en cache
+      tagsInMessage = this.findTagsInMessage(userMessage)
+      this.tagsCache[userMessage] = tagsInMessage
+      this.tagsCacheTimestamp = now
+    }
+
     const context = this.getElementsByTags(tagsInMessage)
 
     let output = `CAMPAGNE: ${c.meta?.titre || 'Sans titre'}\n\n`
@@ -678,32 +1117,73 @@ class MemoryManager {
       output += `RÉSUMÉ: ${c.meta.resume_global}\n\n`
     }
 
+    // 📌 PRIORITÉ: Afficher les éléments par priorité (pas juste les 3 premiers)
     if (c.chapitres && c.chapitres.length > 0) {
       output += `CHAPITRES (${c.chapitres.length}):\n`
-      c.chapitres.slice(0, 3).forEach((ch) => {
-        output += `- ${ch.titre}: ${ch.resume}\n`
+      // Trier par priorité (décroissant) puis par date
+      const chapitresTries = [...c.chapitres]
+        .sort((a, b) => (b.priorite || 5) - (a.priorite || 5))
+        .slice(0, 5)
+      chapitresTries.forEach((ch) => {
+        output += `- ${ch.titre} [P${ch.priorite || 5}]: ${ch.resume}\n`
       })
       output += '\n'
     }
 
     if (c.pnj_importants && c.pnj_importants.length > 0) {
       output += `PNJ IMPORTANTS (${c.pnj_importants.length}):\n`
-      c.pnj_importants.slice(0, 3).forEach((pnj) => {
-        output += `- ${pnj.nom} (${pnj.role}): ${pnj.description}\n`
+      // Trier par priorité (décroissant)
+      const pnjTries = [...c.pnj_importants]
+        .sort((a, b) => (b.priorite || 5) - (a.priorite || 5))
+        .slice(0, 5)
+      pnjTries.forEach((pnj) => {
+        const emotions = pnj.emotion ? ` [${pnj.emotion}]` : ''
+        output += `- ${pnj.nom} (${pnj.role})${emotions}: ${pnj.description}\n`
       })
       output += '\n'
     }
 
     if (c.lieux_importants && c.lieux_importants.length > 0) {
       output += `LIEUX (${c.lieux_importants.length}):\n`
-      c.lieux_importants.slice(0, 3).forEach((lieu) => {
-        output += `- ${lieu.nom}: ${lieu.description}\n`
+      // Trier par priorité (décroissant)
+      const lieuTries = [...c.lieux_importants]
+        .sort((a, b) => (b.priorite || 5) - (a.priorite || 5))
+        .slice(0, 5)
+      lieuTries.forEach((lieu) => {
+        output += `- ${lieu.nom} [P${lieu.priorite || 5}]: ${lieu.description}\n`
       })
       output += '\n'
     }
 
+    // 🎯 CONTEXTE PERTINENT: Éléments liés aux tags du message
     if (context) {
+      output += `CONTEXTE PERTINENT (tags détectés: ${tagsInMessage.join(', ')}):\n`
       output += context
+    }
+
+    // 🧠 MÉMOIRE IMPORTANTE: Éléments clés même s'ils sont vieux
+    const importantElements = this.getImportantElements(10)
+    if (importantElements.length > 0) {
+      output += `\nMÉMOIRE IMPORTANTE (éléments clés):\n`
+      importantElements.forEach((elem) => {
+        if (elem.type === 'pnj') {
+          // Format PNJ complet
+          const emotions = elem.emotion ? ` [${elem.emotion}]` : ''
+          output += `- [PNJ] ${elem.name} (${elem.role})${emotions}: ${elem.description}\n`
+          if (elem.desirs) output += `  Désirs: ${elem.desirs}\n`
+          if (elem.peurs) output += `  Peurs: ${elem.peurs}\n`
+        } else if (elem.type === 'lieux') {
+          // Format Lieu
+          output += `- [LIEU] ${elem.name}: ${elem.description}\n`
+        } else if (elem.type === 'evenements') {
+          // Format Événement
+          output += `- [ÉVÉNEMENT] ${elem.name}: ${elem.description}\n`
+          if (elem.consequences) output += `  Conséquences: ${elem.consequences}\n`
+        } else if (elem.type === 'chapitres') {
+          // Format Chapitre - résumé court d'un arc narratif
+          output += `- [CHAPITRE] ${elem.name}: ${elem.resume}\n`
+        }
+      })
     }
 
     return output

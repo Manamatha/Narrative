@@ -8,13 +8,14 @@ generator client {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  pin       String?  @unique // (legacy) Code PIN unique (4 chiffres) - optional
-  pinHash   String?  // bcrypt hashed PIN
-  sessions  Session[]
-  pinLogs   PINLog[]  // Historique des connexions
-  createdAt DateTime @default(now())
-  lastUsed  DateTime @default(now())
+  id         String      @id @default(cuid())
+  pin        String?     @unique // (legacy) Code PIN unique (4 chiffres) - optional
+  pinHash    String?     // bcrypt hashed PIN
+  sessions   Session[]
+  pinLogs    PINLog[]    // Historique des connexions
+  authTokens AuthToken[] // Tokens d'authentification
+  createdAt  DateTime    @default(now())
+  lastUsed   DateTime    @default(now())
 }
 
 model PINLog {

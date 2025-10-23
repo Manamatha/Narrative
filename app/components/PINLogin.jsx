@@ -32,8 +32,13 @@ export default function PINLogin({ onLoginSuccess }) {
         return
       }
 
-  // Server set cookie HttpOnly; notify parent that login succeeded
-  onLoginSuccess()
+      // Stocker le token en localStorage
+      if (data.token) {
+        localStorage.setItem('authToken', data.token)
+      }
+
+      // Notifier le parent que la connexion a réussi
+      onLoginSuccess()
     } catch (err) {
       setError(`Erreur: ${err.message}`)
       setIsLoading(false)
@@ -62,9 +67,16 @@ export default function PINLogin({ onLoginSuccess }) {
         return
       }
 
-  // Server sets cookie; keep showing the PIN to the user
-  setNewPin(data.pin)
-  onLoginSuccess()
+      // Stocker le token en localStorage
+      if (data.token) {
+        localStorage.setItem('authToken', data.token)
+      }
+
+      // Afficher le PIN à l'utilisateur
+      setNewPin(data.pin)
+
+      // Notifier le parent que la connexion a réussi
+      onLoginSuccess()
     } catch (err) {
       setError(`Erreur: ${err.message}`)
       setIsLoading(false)

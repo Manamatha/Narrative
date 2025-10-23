@@ -27,6 +27,50 @@ export async function POST(request) {
     
     const dernierMessage = messages[messages.length - 1]?.content || ""
 
+    // 🧠 TRACKER: Enregistrer les éléments mentionnés dans le message avec TOUTES leurs données
+    const tagsDetectes = memoryManager.findTagsInMessage(dernierMessage)
+    tagsDetectes.forEach(tag => {
+      const campaign = memoryManager.getCurrentCampaign()
+      if (campaign) {
+        // Track PNJ avec données complètes
+        const pnj = campaign.pnj_importants?.find(p => p.nom.toLowerCase() === tag.toLowerCase())
+        if (pnj) {
+          memoryManager.trackImportantElement('pnj', pnj.nom, {
+            role: pnj.role,
+            description: pnj.description,
+            emotion: pnj.emotion,
+            caractere: pnj.caractere,
+            valeurs: pnj.valeurs,
+            peurs: pnj.peurs,
+            desirs: pnj.desirs,
+            histoire: pnj.histoire,
+            tags: pnj.tags
+          })
+        }
+
+        // Track Lieux avec données complètes
+        const lieu = campaign.lieux_importants?.find(l => l.nom.toLowerCase() === tag.toLowerCase())
+        if (lieu) {
+          memoryManager.trackImportantElement('lieux', lieu.nom, {
+            description: lieu.description,
+            tags: lieu.tags
+          })
+        }
+
+        // Track Événements avec données complètes
+        const evt = campaign.evenements_cles?.find(e => e.titre.toLowerCase() === tag.toLowerCase())
+        if (evt) {
+          memoryManager.trackImportantElement('evenements', evt.titre, {
+            description: evt.description,
+            consequences: evt.consequences,
+            personnages_impliques: evt.personnages_impliques,
+            lieux_impliques: evt.lieux_impliques,
+            tags: evt.tags
+          })
+        }
+      }
+    })
+
     const contexteCampagne = memoryManager.generateOptimizedContext(dernierMessage, messages.length)
 
     const systemMessage = {
@@ -40,6 +84,8 @@ DIRECTIVES:
 - Réponds en 2-3 phrases maximum
 - Sois immersif et cohérent
 - Avance la narration naturellement
+- Sois créatif: crée des éléments UNIQUES et VARIÉS
+- Réutilise les éléments existants quand c'est pertinent
 
 ${allowMemoryWrite ? `
 MISE À JOUR PNJ:

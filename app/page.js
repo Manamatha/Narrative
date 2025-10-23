@@ -4,6 +4,7 @@ import MemoryManager from './components/MemoryManager'
 import SessionManager from './components/SessionManager'
 import PINLogin from './components/PINLogin'
 import { getMemoryManager } from './utils/memoryManager'
+import { useSyncSessions } from './hooks/useSyncSessions'
 
 export default function Home() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
@@ -16,6 +17,9 @@ export default function Home() {
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState(null)
   const chatRef = useRef(null)
+
+  // Synchroniser les sessions entre appareils (seulement quand il y a un changement)
+  useSyncSessions(isAuthenticated)
 
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
@@ -70,8 +74,15 @@ const handleLoginSuccess = () => {
   setIsAuthenticated(true)
 }
 
-const handleLogout = () => {
-  // to logout, call server to clear cookie (not implemented) and clear client state
+const handleLogout = async () => {
+  // Appeler le serveur pour supprimer le token
+  try {
+    await fetch('/api/auth/logout', { method: 'POST' })
+  } catch (err) {
+    console.error('Erreur déconnexion:', err)
+  }
+
+  // Nettoyer l'état client
   setIsAuthenticated(false)
   setMessages([])
   setCurrentSession(null)
@@ -109,9 +120,14 @@ const handleSessionChange = (sessionId) => {
     setInputMessage('')
 
     try {
+      const token = localStorage.getItem('authToken')
+
       const response = await fetch('/api/chat-ai-memory', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token && { 'Authorization': `Bearer ${token}` })
+          },
         body: JSON.stringify({
           messages: newMessages,
           allowMemoryWrite: true,
@@ -128,7 +144,7 @@ const handleSessionChange = (sessionId) => {
   setMessages(finalMessages)
   if (currentSession) {
     memoryManager.setSessionMessages(finalMessages, currentSession)
-    await memoryManager.saveToServer() // ☁️ sauvegarde sur le serveur
+    await memoryManager.saveSessionToServer(currentSession) // ☁️ sauvegarde sur le serveur
   }
 }
 

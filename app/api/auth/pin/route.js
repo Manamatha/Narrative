@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { PrismaClient } from '@prisma/client'
-import { hashPin, comparePin, createSetCookieHeader } from '@/app/utils/auth'
+import { hashPin, comparePin } from '@/app/utils/auth'
 import crypto from 'crypto'
 
 const prisma = new PrismaClient()
@@ -52,11 +52,10 @@ export async function POST(request) {
       const userAgent = request.headers.get('user-agent')
       await prisma.pINLog.create({ data: { userId: user.id, ipAddress, userAgent } })
 
-      // create auth token and set cookie
+      // Créer auth token et le retourner (pas de cookie)
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
       await prisma.authToken.create({ data: { userId: user.id, token } })
-      const setCookie = createSetCookieHeader(token)
-      return new Response(JSON.stringify({ ok: true, message: 'Connecté' }), { status: 200, headers: { 'Set-Cookie': setCookie, 'Content-Type':'application/json' } })
+      return NextResponse.json({ ok: true, token, message: 'Connecté' })
     }
 
     // ✨ CREATE - Créer un nouveau compte avec PIN aléatoire

@@ -17,14 +17,14 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
     setSessions(memoryManager.getSessionsList())
   }
 
-  const createNewSession = async () => { // ← ajouter async
+  const createNewSession = async () => {
   if (!newSessionName.trim()) return
-  
+
   const memoryManager = getMemoryManager()
   const sessionId = memoryManager.createNewSession(newSessionName)
 
   // ✅ sauvegarde immédiate sur le serveur
-  await memoryManager.saveToServer()
+  await memoryManager.saveSessionToServer(sessionId)
 
   setNewSessionName('')
   loadSessions()
@@ -38,15 +38,14 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
 
   // 1️⃣ sauvegarde les messages de la session actuelle
   if (memoryManager.currentSessionId) {
-    memoryManager.sessions[memoryManager.currentSessionId].campaign.messages = messages
-    await memoryManager.saveToServer()
+    await memoryManager.saveSessionToServer(memoryManager.currentSessionId)
   }
 
   // 2️⃣ changer de session
   memoryManager.switchSession(sessionId)
 
   // 3️⃣ charger les messages de la nouvelle session
-  setMessages(memoryManager.sessions[sessionId]?.campaign?.messages || [])
+  const newMessages = memoryManager.getSessionMessages(sessionId) || []
 
   // 4️⃣ notifier le parent
   onSessionChange(sessionId)
@@ -64,9 +63,21 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
     // ✅ Demande de confirmation avant suppression
     if (!confirm('Supprimer cette session ? Les données seront perdues.')) return
 
-    // Supprimer la session
+    // Supprimer la session via l'API
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: sessionId })
+      })
+      if (!res.ok) throw new Error('Erreur suppression')
+    } catch (err) {
+      console.error('Erreur suppression session:', err)
+      return
+    }
+
+    // Supprimer localement aussi
     memoryManager.deleteSession(sessionId)
-    await memoryManager.saveToServer()
 
     // Recharger la liste mise à jour
     const updatedSessions = memoryManager.getSessionsList()

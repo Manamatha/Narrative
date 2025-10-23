@@ -19,18 +19,12 @@ export async function comparePin(pin, hash){
 }
 
 export async function getUserIdFromRequest(request){
-  const cookieHeader = request.headers.get('cookie') || ''
-  const cookies = Object.fromEntries(cookieHeader.split(';').map(c=>{
-    const [k,v] = c.split('=') || ['','']
-    return [k.trim(), v ? v.trim() : '']
-  }))
-  const token = cookies['sessionToken']
+  // Lire le token depuis Authorization header (Bearer token)
+  const authHeader = request.headers.get('authorization') || ''
+  const token = authHeader.replace('Bearer ', '')
+
   if(!token) return null
+
   const auth = await prisma.authToken.findUnique({ where: { token } })
   return auth ? auth.userId : null
-}
-
-export function createSetCookieHeader(token, maxAgeSeconds=60*60*24*30){
-  // HttpOnly, Secure recommended in production
-  return `sessionToken=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAgeSeconds}`
 }

@@ -54,7 +54,7 @@ const resetAvailableTags = () => {
 
   const loadCampaign = () => {
     const memoryManager = getMemoryManager()
-    const currentCampaign = memoryManager.getCampaign()
+    const currentCampaign = memoryManager.getCurrentCampaign()
     if (currentCampaign) {
       setCampaign(currentCampaign)
       setMemoryEnabled(currentCampaign.memory_enabled !== false)
@@ -69,7 +69,7 @@ const resetAvailableTags = () => {
 
   const toggleMemorySystem = () => {
     const memoryManager = getMemoryManager()
-    const currentCampaign = memoryManager.getCampaign()
+    const currentCampaign = memoryManager.getCurrentCampaign()
     if (currentCampaign) {
       const updated = { ...currentCampaign }
       updated.memory_enabled = !memoryEnabled
@@ -82,16 +82,16 @@ const resetAvailableTags = () => {
 const addGlobalTag = (tag) => {
   console.log('➕ Ajout du tag global:', tag)
   const memoryManager = getMemoryManager()
-  const currentCampaign = memoryManager.getCampaign()
-  
+  const currentCampaign = memoryManager.getCurrentCampaign()
+
   if (currentCampaign && tag.trim() && !currentCampaign.tags_globaux.includes(tag.trim())) {
     // Ajout MANUEL
     currentCampaign.tags_globaux.push(tag.trim())
-    
+
     // Sauvegarde FORCÉE
     memoryManager.updateCampaign(currentCampaign)
     memoryManager.saveCampaign()
-    
+
     // Rechargement
     setTimeout(() => {
       loadCampaign()
@@ -104,16 +104,16 @@ const removeGlobalTag = (tag) => {
   console.log('🎯 FONCTION removeGlobalTag APPELLÉE')
   console.log('🗑️ Suppression du tag global:', tag)
   const memoryManager = getMemoryManager()
-  const currentCampaign = memoryManager.getCampaign()
-  
+  const currentCampaign = memoryManager.getCurrentCampaign()
+
   if (currentCampaign) {
     // Suppression MANUELLE
     currentCampaign.tags_globaux = currentCampaign.tags_globaux.filter(t => t !== tag)
-    
+
     // Sauvegarde FORCÉE
     memoryManager.updateCampaign(currentCampaign)
     memoryManager.saveCampaign()
-    
+
     // Rechargement
     setTimeout(() => {
       loadCampaign()
