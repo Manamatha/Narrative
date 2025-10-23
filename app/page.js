@@ -25,28 +25,11 @@ export default function Home() {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
 
-  // Vérifier l'authentification au chargement via cookie session
+  // Authentification automatique (PIN désactivé)
   useEffect(() => {
-    async function check() {
-      try {
-        const res = await fetch('/api/auth/pin')
-        if (res.ok) {
-          const data = await res.json()
-          if (data.ok) {
-            setIsAuthenticated(true)
-          } else {
-            setIsAuthenticated(false)
-          }
-        } else {
-          setIsAuthenticated(false)
-        }
-      } catch (err) {
-        setIsAuthenticated(false)
-      } finally {
-        setIsLoading(false)
-      }
-    }
-    check()
+    // Considérer l'utilisateur comme toujours authentifié
+    setIsAuthenticated(true)
+    setIsLoading(false)
   }, [])
 
   // Charger les données une fois authentifié
@@ -159,10 +142,10 @@ const handleSessionChange = (sessionId) => {
     return memoryManager.sessions[currentSession]?.name || 'Aventure'
   }
 
-  // Afficher le login si pas authentifié
-  if (!isAuthenticated) {
-    return <PINLogin onLoginSuccess={handleLoginSuccess} />
-  }
+  // PIN désactivé - ne jamais afficher l'écran de login
+  // if (!isAuthenticated) {
+  //   return <PINLogin onLoginSuccess={handleLoginSuccess} />
+  // }
 
   if (isLoading) {
     return (
