@@ -32,11 +32,7 @@ export default function PINLogin({ onLoginSuccess }) {
         return
       }
 
-      // Stocker le token en localStorage
-      if (data.token) {
-        localStorage.setItem('authToken', data.token)
-      }
-
+      // Le cookie est automatiquement géré par le navigateur
       // Notifier le parent que la connexion a réussi
       onLoginSuccess()
     } catch (err) {
@@ -67,11 +63,7 @@ export default function PINLogin({ onLoginSuccess }) {
         return
       }
 
-      // Stocker le token en localStorage
-      if (data.token) {
-        localStorage.setItem('authToken', data.token)
-      }
-
+      // Le cookie est automatiquement géré par le navigateur
       // Afficher le PIN à l'utilisateur
       setNewPin(data.pin)
 

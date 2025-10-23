@@ -19,9 +19,15 @@ export async function comparePin(pin, hash){
 }
 
 export async function getUserIdFromRequest(request){
-  // Lire le token depuis Authorization header (Bearer token)
-  const authHeader = request.headers.get('authorization') || ''
-  const token = authHeader.replace('Bearer ', '')
+  // Lire le token depuis le cookie sessionToken
+  const cookieHeader = request.headers.get('cookie') || ''
+  const cookies = Object.fromEntries(
+    cookieHeader.split(';').map(c => {
+      const [k, v] = c.split('=') || ['', '']
+      return [k.trim(), v ? v.trim() : '']
+    })
+  )
+  const token = cookies['sessionToken']
 
   if(!token) return null
 

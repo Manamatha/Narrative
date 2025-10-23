@@ -120,14 +120,11 @@ const handleSessionChange = (sessionId) => {
     setInputMessage('')
 
     try {
-      const token = localStorage.getItem('authToken')
-
       const response = await fetch('/api/chat-ai-memory', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token && { 'Authorization': `Bearer ${token}` })
-          },
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           messages: newMessages,
           allowMemoryWrite: true,

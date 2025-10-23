@@ -52,10 +52,20 @@ export async function POST(request) {
       const userAgent = request.headers.get('user-agent')
       await prisma.pINLog.create({ data: { userId: user.id, ipAddress, userAgent } })
 
-      // Créer auth token et le retourner (pas de cookie)
+      // Créer auth token et le retourner via cookie
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
       await prisma.authToken.create({ data: { userId: user.id, token } })
-      return NextResponse.json({ ok: true, token, message: 'Connecté' })
+      
+      // Créer la réponse avec le cookie sécurisé
+      const response = NextResponse.json({ ok: true, message: 'Connecté' })
+      response.cookies.set('sessionToken', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30 // 30 jours
+      })
+      return response
     }
 
     // ✨ CREATE - Créer un nouveau compte avec PIN aléatoire
@@ -83,8 +93,21 @@ export async function POST(request) {
 
       const hashed = await hashPin(uniquePin)
       const newUser = await prisma.user.create({ data: { pinHash: hashed } })
-
-      return NextResponse.json({ ok: true, userId: newUser.id, pin: uniquePin, message: 'Nouveau compte créé avec PIN' })
+      
+      // Créer auth token pour la nouvelle session
+      const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
+      await prisma.authToken.create({ data: { userId: newUser.id, token } })
+      
+      // Créer la réponse avec le cookie sécurisé
+      const response = NextResponse.json({ ok: true, userId: newUser.id, pin: uniquePin, message: 'Nouveau compte créé avec PIN' })
+      response.cookies.set('sessionToken', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30 // 30 jours
+      })
+      return response
     }
 
   } catch (error) {
