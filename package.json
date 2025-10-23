@@ -5,12 +5,16 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
-    "start": "next start",
-    "lint": "eslint"
+    "start": "node ./scripts/check-env.js && next start",
+    "lint": "eslint",
+    "check-env": "node ./scripts/check-env.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy"
   },
   "dependencies": {
     "@prisma/client": "^6.17.1",
     "axios": "^1.12.2",
+    "bcryptjs": "^2.4.3",
     "next": "15.5.5",
     "prisma": "^6.17.1",
     "react": "19.1.0",

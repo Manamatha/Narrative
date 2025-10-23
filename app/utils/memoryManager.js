@@ -1,203 +1,105 @@
-import { PrismaClient } from '@prisma/client';
-const prisma = new PrismaClient();
+/**
+ * MemoryManager - Isomorphic session & campaign memory system
+ * Works on both client (fetch) and server (Prisma)
+ * Export: default MemoryManager + named getMemoryManager() singleton
+ */
 
-// Récupère la clé utilisateur unique depuis l'API
-async function getUserId() {
-  if (typeof window === 'undefined') return null;
-  
-  try {
-    const res = await fetch('/api/config');
-    const { USER_KEY } = await res.json();
-    return USER_KEY;
-  } catch (err) {
-    console.warn('⚠️ Impossible de charger USER_KEY:', err);
-    return 'user_default';
-  }
-}
-
-// Crée l'utilisateur s'il n'existe pas
-async function ensureUserExists(userId) {
-  try {
-    await prisma.user.upsert({
-      where: { id: userId },
-      update: {},
-      create: { id: userId }
-    });
-  } catch (err) {
-    console.warn("⚠️ Erreur création utilisateur:", err);
-  }
-}
-
-async function loadSessionsFromDB(userId) {
-  if (!userId) return { sessions: {}, sessionChats: {} };
-  
-  try {
-    const sessionsRaw = await prisma.session.findMany({
-      where: { userId }
-    });
-    const sessions = {};
-    const sessionChats = {};
-
-    sessionsRaw.forEach(s => {
-      const campaign = JSON.parse(s.campaign || '{}');
-      sessions[s.id] = {
-        id: s.id,
-        name: s.name,
-        campaign: campaign,
-        createdAt: s.createdAt,
-        lastAccessed: s.lastAccessed
-      };
-      sessionChats[s.id] = campaign.chats || [];
-    });
-
-    return { sessions, sessionChats };
-  } catch (err) {
-    console.warn("⚠️ Erreur chargement sessions:", err);
-    return { sessions: {}, sessionChats: {} };
-  }
-}
-
-async function saveSessionToDB(userId, sessionId, sessionData, chatData) {
-  if (!userId) return;
-  
-  try {
-    await ensureUserExists(userId);
-    
-    const campaignWithChats = { ...sessionData.campaign, chats: chatData };
-
-    await prisma.session.upsert({
-      where: { id: sessionId },
-      update: {
-        name: sessionData.name,
-        campaign: JSON.stringify(campaignWithChats),
-        lastAccessed: new Date()
-      },
-      create: {
-        id: sessionId,
-        userId,
-        name: sessionData.name,
-        campaign: JSON.stringify(campaignWithChats),
-        createdAt: new Date(),
-        lastAccessed: new Date()
-      }
-    });
-  } catch (err) {
-    console.error("❌ Erreur sauvegarde session:", err);
-  }
-}
+const isServer = typeof window === 'undefined'
 
 class MemoryManager {
   constructor() {
-    this.userId = null // sera initialisé dans loadFromServer()
+    this.userId = null
     this.sessions = {}
-    this.currentSessionId = null
     this.sessionChats = {}
-    
-    // Cache des tags pour contexte intelligent
-    this.tagsRecherchesRecent = {}
-    this.messageCountGlobal = 0
-
-    // Timeout / batch pour éviter surcharge Vercel
-    this.saveTimeout = null
-    this.saveDelay = 1000 // 1s de délai pour batcher les sauvegardes
-
-    this.loadSessions()
+    this.currentSessionId = null
   }
 
-  async loadFromServer() {
+  async _getPrismaClient() {
+    if (!isServer) throw new Error('Prisma is server-side only')
+    const { PrismaClient } = await import('@prisma/client')
+    return new PrismaClient()
+  }
+
+  async loadFromServer(userId) {
+    this.userId = userId
     try {
-      // 1. Charger l'USER_KEY depuis le serveur
-      if (!this.userId) {
-        this.userId = await getUserId();
-      }
-      
-      // 2. Charger les sessions depuis la BD
-      const { sessions, sessionChats } = await loadSessionsFromDB(this.userId);
-      this.sessions = sessions;
-      this.sessionChats = sessionChats;
-      this.currentSessionId = Object.keys(this.sessions)[0] || this.createNewSession();
-    } catch (err) {
-      console.warn("⚠️ Impossible de charger les sessions depuis la BD:", err);
-    }
-  }
+      if (isServer) {
+        const prisma = await this._getPrismaClient()
+        const rows = await prisma.session.findMany({
+          where: { userId },
+          orderBy: { lastAccessed: 'desc' }
+        })
 
-  loadSessions() {
-    if (typeof window !== 'undefined') {
-      const savedSessions = localStorage.getItem('jdr_sessions')
-      if (savedSessions) {
-        const sessionsData = JSON.parse(savedSessions)
-        this.sessions = sessionsData.sessions || {}
-        this.currentSessionId = sessionsData.currentSessionId || this.createNewSession()
+        rows.forEach((row) => {
+          try {
+            const campaign = typeof row.campaign === 'string' ? JSON.parse(row.campaign) : row.campaign
+            this.sessions[row.id] = {
+              id: row.id,
+              name: row.name,
+              campaign,
+              createdAt: row.createdAt,
+              lastAccessed: row.lastAccessed
+            }
+            this.sessionChats[row.id] = []
+          } catch (e) {
+            console.warn('Failed to parse campaign for session', row.id)
+          }
+        })
       } else {
-        this.currentSessionId = this.createNewSession()
+        const res = await fetch('/api/sessions')
+        const data = await res.json()
+
+        if (data.ok && Array.isArray(data.sessions)) {
+          data.sessions.forEach((session) => {
+            try {
+              const campaign = typeof session.campaign === 'string' 
+                ? JSON.parse(session.campaign) 
+                : session.campaign
+              this.sessions[session.id] = {
+                id: session.id,
+                name: session.name,
+                campaign,
+                createdAt: session.createdAt,
+                lastAccessed: session.lastAccessed
+              }
+              this.sessionChats[session.id] = []
+            } catch (e) {
+              console.warn('Failed to parse campaign for session', session.id)
+            }
+          })
+        }
       }
 
-      const savedChats = localStorage.getItem('jdr_session_chats')
-      if (savedChats) {
-        this.sessionChats = JSON.parse(savedChats)
+      const sessionIds = Object.keys(this.sessions)
+      if (sessionIds.length === 0) {
+        this.currentSessionId = this.createNewSession('Aventure sans titre')
+      } else {
+        this.currentSessionId = sessionIds[0]
       }
+    } catch (err) {
+      console.error('loadFromServer error:', err)
     }
   }
 
-  // Sauvegarde batchée pour éviter timeouts Vercel
-  saveAllData() {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('jdr_sessions', JSON.stringify({
-          sessions: this.sessions,
-          currentSessionId: this.currentSessionId
-        }))
-        localStorage.setItem('jdr_session_chats', JSON.stringify(this.sessionChats))
-        
-        if (this.saveTimeout) clearTimeout(this.saveTimeout)
-        this.saveTimeout = setTimeout(() => this.saveToServer(), this.saveDelay)
-      } catch (error) {
-        console.error("❌ Erreur sauvegarde:", error)
-      }
-    }
-  }
+  createNewSession(name = 'Nouvelle Aventure') {
+    const sessionId = 'session_' + (
+      typeof crypto !== 'undefined' && crypto.randomUUID 
+        ? crypto.randomUUID() 
+        : Math.random().toString(36).slice(2, 11)
+    )
 
-  saveCampaign() {
-    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
-      this.sessions[this.currentSessionId].campaign.meta.date_derniere_sauvegarde = new Date().toISOString()
-      this.sessions[this.currentSessionId].lastAccessed = new Date().toISOString()
-      this.saveAllData()
-    }
-  }
-
-  async saveToServer() {
-  if (!this.userId) return;
-  try {
-    // Sauvegarder TOUTES les sessions, pas juste l'actuelle
-    const sessionIds = Object.keys(this.sessions);
-    for (const sessionId of sessionIds) {
-      await saveSessionToDB(
-        this.userId,
-        sessionId,
-        this.sessions[sessionId],
-        this.sessionChats[sessionId]
-      );
-    }
-  } catch (err) {
-    console.error("❌ Erreur sauvegarde session:", err);
-  }
-}
-
-
-  createNewSession(name = "Nouvelle Aventure") {
-    const sessionId = 'session_' + (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substr(2, 9))
-    
+    const now = new Date().toISOString()
     this.sessions[sessionId] = {
       id: sessionId,
-      name: name,
+      name,
       campaign: {
         meta: {
           titre: name,
-          resume_global: "",
-          date_creation: new Date().toISOString(),
-          date_derniere_sauvegarde: new Date().toISOString()
+          resume_global: '',
+          date_creation: now,
+          date_derniere_sauvegarde: now
         },
-        style_narration: "Monde immersif et réactif. Rythme lent, agence joueur totale. Terminer par Que faites-vous ? PNJ uniques et cohérents, jamais automatiquement amicaux. Nuances contextuelles pour éviter la monotonie Intrigues diverses : politique, social, mystères, survie. Conséquences réalistes Contenu adulte maximal : vulgarité crédible, gore comme épice, érotisme avec fade-to-black. Tous joueurs consentants.",
+        style_narration: '',
         chapitres: [],
         pnj_importants: [],
         lieux_importants: [],
@@ -205,12 +107,16 @@ class MemoryManager {
         tags_globaux: [],
         memory_enabled: true
       },
-      createdAt: new Date().toISOString(),
-      lastAccessed: new Date().toISOString()
+      createdAt: now,
+      lastAccessed: now
     }
-
     this.sessionChats[sessionId] = []
-    this.saveAllData()
+    this.currentSessionId = sessionId
+
+    this.saveSessionToServer(sessionId).catch((e) => {
+      console.error('Failed to save new session to server:', e)
+    })
+
     return sessionId
   }
 
@@ -218,7 +124,7 @@ class MemoryManager {
     if (this.sessions[sessionId]) {
       this.currentSessionId = sessionId
       this.sessions[sessionId].lastAccessed = new Date().toISOString()
-      this.saveAllData()
+      this.saveSessionToServer(sessionId).catch(() => {})
     }
   }
 
@@ -228,44 +134,6 @@ class MemoryManager {
 
   setSessionMessages(messages, sessionId = this.currentSessionId) {
     this.sessionChats[sessionId] = messages
-    this.saveAllData()
-  }
-
-  renameSession(sessionId, newName) {
-    if (this.sessions[sessionId]) {
-      this.sessions[sessionId].name = newName
-      this.sessions[sessionId].campaign.meta.titre = newName
-      this.saveAllData()
-    }
-  }
-
-  deleteSession(sessionId) {
-    if (Object.keys(this.sessions).length > 1) {
-      delete this.sessions[sessionId]
-      delete this.sessionChats[sessionId]
-      if (this.currentSessionId === sessionId) {
-        this.currentSessionId = Object.keys(this.sessions)[0]
-      }
-      this.saveAllData()
-      // Supprimer aussi du serveur
-      this.deleteSessionFromServer(sessionId)
-    }
-  }
-
-  async deleteSessionFromServer(sessionId) {
-    if (!this.userId) return
-    try {
-      await fetch('/api/sessions', {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-ID': this.userId
-        },
-        body: JSON.stringify({ id: sessionId })
-      })
-    } catch (err) {
-      console.error("❌ Erreur suppression session serveur:", err)
-    }
   }
 
   getCurrentCampaign() {
@@ -278,515 +146,577 @@ class MemoryManager {
     )
   }
 
-  loadCampaign() {
-    return this.getCurrentCampaign()
-  }
-  generateOptimizedContext(dernierMessage, messageCount) {
-    const campaign = this.getCurrentCampaign()
-    if (!campaign) return ""
+  async saveSessionToServer(sessionId) {
+    try {
+      const payload = this.sessions[sessionId]
+      if (!payload) return
 
-    let contexte = ""
-    contexte += `AVENTURE: ${campaign.meta.titre}\n`
-    if (campaign.meta.resume_global) {
-      contexte += `RÉSUMÉ: ${campaign.meta.resume_global}\n`
-    }
-
-    if (messageCount % 8 === 0 && campaign.style_narration) {
-      contexte += `STYLE: ${campaign.style_narration}\n`
-    }
-
-    const contexteTags = this.searchTagsIntelligent(dernierMessage)
-    if (contexteTags) {
-      contexte += contexteTags
-    }
-
-    return contexte
-  }
-
-  searchTagsIntelligent(dernierMessage) {
-    if (!dernierMessage) return ""
-
-    this.messageCountGlobal++
-
-    Object.keys(this.tagsRecherchesRecent).forEach(tag => {
-      if (this.messageCountGlobal - this.tagsRecherchesRecent[tag] > 8) {
-        delete this.tagsRecherchesRecent[tag]
-      }
-    })
-
-    const tagsTrouves = this.findTagsInMessage(dernierMessage)
-    if (tagsTrouves.length === 0) return ""
-
-    const tagsAFiltrer = tagsTrouves.filter(tag => !this.tagsRecherchesRecent[tag])
-    if (tagsAFiltrer.length === 0) return ""
-
-    tagsAFiltrer.forEach(tag => {
-      this.tagsRecherchesRecent[tag] = this.messageCountGlobal
-    })
-
-    return this.getElementsByTags(tagsAFiltrer)
-  }
-
-  findTagsInMessage(message) {
-    if (!message || typeof message !== 'string') return []
-
-    const messageMinuscule = message.toLowerCase()
-    const campaign = this.getCurrentCampaign()
-    if (!campaign) return []
-
-    const tagsTrouves = new Set()
-
-    campaign.tags_globaux.forEach(tag => {
-      if (messageMinuscule.includes(tag.toLowerCase())) tagsTrouves.add(tag)
-    })
-
-    campaign.pnj_importants.forEach(pnj => {
-      if (messageMinuscule.includes(pnj.nom.toLowerCase())) {
-        tagsTrouves.add(pnj.nom)
-        pnj.tags.forEach(tag => tagsTrouves.add(tag))
-      }
-    })
-
-    campaign.lieux_importants.forEach(lieu => {
-      if (messageMinuscule.includes(lieu.nom.toLowerCase())) {
-        tagsTrouves.add(lieu.nom)
-        lieu.tags.forEach(tag => tagsTrouves.add(tag))
-      }
-    })
-
-    return Array.from(tagsTrouves).slice(0, 5)
-  }
-
-  getElementsByTags(tags) {
-    const campaign = this.getCurrentCampaign()
-    if (!campaign || tags.length === 0) return ""
-
-    let resultat = "\n// CONTEXTE RÉCENT:\n"
-
-    tags.forEach(tag => {
-      const lieux = campaign.lieux_importants.filter(lieu =>
-        lieu.tags.includes(tag) || lieu.nom.toLowerCase().includes(tag.toLowerCase())
-      )
-      if (lieux.length > 0) resultat += `LIEUX[${tag}]: ${lieux.map(l => l.nom).join(', ')}\n`
-
-      const pnj = campaign.pnj_importants.filter(p =>
-        p.tags.includes(tag) || p.nom.toLowerCase().includes(tag.toLowerCase())
-      )
-      if (pnj.length > 0) resultat += `PNJ[${tag}]: ${pnj.map(p => p.nom).join(', ')}\n`
-    })
-
-    return resultat
-  }
-
-  processAISaves(sauvegardes) {
-    const campaign = this.getCurrentCampaign()
-    if (!campaign) return 0
-
-    let savedCount = 0
-    sauvegardes.forEach(save => {
-      switch (save.type) {
-        case 'LIEU':
-          campaign.lieux_importants.push({
-            nom: save.nom,
-            description: save.description,
-            tags: save.tags,
-            priorite: 5
-          })
-          savedCount++
-          break
-        case 'PNJ':
-          campaign.pnj_importants.push({
-            nom: save.nom,
-            role: save.role,
-            description: save.description,
-            emotion: "C50-A30-P50-H10-R50-J10",
-            caractere: "",
-            valeurs: "",
-            peurs: "",
-            desirs: "",
-            histoire: "",
-            vitesse_evolution: 1.0,
-            tags: save.tags,
-            priorite: 5
-          })
-          savedCount++
-          break
-        case 'EVENEMENT':
-          campaign.evenements_cles.push({
-            titre: save.titre || "Événement important",
-            description: save.description || "",
-            consequences: save.consequences || "",
-            personnages_impliques: [],
-            lieux_impliques: [],
-            tags: save.tags,
-            date: new Date().toISOString(),
-            priorite: 5
-          })
-          savedCount++
-          break
-        case 'CHAPITRE':
-          campaign.chapitres.push({
-            id: campaign.chapitres.length + 1,
-            titre: save.titre,
-            resume: save.resume,
-            tags: save.tags,
-            date: new Date().toISOString(),
-            priorite: 5
-          })
-          savedCount++
-          break
-      }
-    })
-
-    if (savedCount > 0) this.saveCampaign()
-    return savedCount
-  }
-  processPNJUpdates(updates) {
-    const campaign = this.getCurrentCampaign()
-    if (!campaign) return 0
-
-    let updatedCount = 0
-    const maintenant = new Date().toISOString().split('T')[0]
-
-    updates.forEach(update => {
-      const pnj = campaign.pnj_importants.find(p =>
-        p.nom.toLowerCase() === update.nom.toLowerCase()
-      )
-
-      if (pnj) {
-        const emotions = this.decoderEmotions(pnj.emotion)
-        const vitesse = pnj.vitesse_evolution || 1.0
-        const changementBase = parseInt(update.changement)
-        const changementFinal = Math.round(changementBase * vitesse)
-
-        if (emotions[update.emotion] !== undefined) {
-          const ancienneValeur = emotions[update.emotion]
-          emotions[update.emotion] = Math.max(0, Math.min(100, ancienneValeur + changementFinal))
-          pnj.emotion = this.encoderEmotions(emotions)
-
-          const evenement = `${maintenant}: ${update.raison} → ${update.emotion}${changementFinal >= 0 ? '+' : ''}${changementFinal}`
-          if (pnj.histoire) {
-            pnj.histoire += ` | ${evenement}`
-          } else {
-            pnj.histoire = evenement
+      if (isServer) {
+        const prisma = await this._getPrismaClient()
+        await prisma.session.upsert({
+          where: { id: sessionId },
+          update: {
+            name: payload.name,
+            lastAccessed: new Date(),
+            campaign: JSON.stringify(payload.campaign)
+          },
+          create: {
+            id: sessionId,
+            userId: this.userId,
+            name: payload.name,
+            campaign: JSON.stringify(payload.campaign)
           }
-
-          updatedCount++
+        })
+      } else {
+        const response = await fetch('/api/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: sessionId,
+            name: payload.name,
+            campaign: payload.campaign
+          })
+        })
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`)
         }
       }
-    })
-
-    if (updatedCount > 0) this.saveCampaign()
-    return updatedCount
+    } catch (e) {
+      console.error('saveSessionToServer error:', e)
+    }
   }
 
-  decoderEmotions(emotionCode) {
-    if (!emotionCode) return { confiance:50, amour:30, peur:50, haine:10, respect:50, jalousie:10 }
-    const emotions = { confiance:50, amour:30, peur:50, haine:10, respect:50, jalousie:10 }
-    emotionCode.split('-').forEach(part => {
-      const code = part[0]
-      const valeur = parseInt(part.slice(1))
-      const map = { 'C':'confiance','A':'amour','P':'peur','H':'haine','R':'respect','J':'jalousie' }
-      if(map[code] && !isNaN(valeur)) emotions[map[code]] = valeur
-    })
-    return emotions
+  saveCampaign() {
+    if (this.currentSessionId) {
+      this.saveSessionToServer(this.currentSessionId).catch(() => {})
+    }
   }
-
-  encoderEmotions(emotions) {
-    const map = { 'confiance':'C','amour':'A','peur':'P','haine':'H','respect':'R','jalousie':'J' }
-    return Object.entries(emotions).map(([emotion,valeur])=>`${map[emotion]}${valeur}`).join('-')
-  }
-
-  getCampaign() { return this.getCurrentCampaign() }
 
   updateCampaign(updatedCampaign) {
-    if(this.currentSessionId && this.sessions[this.currentSessionId]){
+    if (this.currentSessionId && this.sessions[this.currentSessionId]) {
       this.sessions[this.currentSessionId].campaign = updatedCampaign
       this.saveCampaign()
     }
   }
 
-  addGlobalTag(tag){
-    const campaign = this.getCurrentCampaign()
-    if(campaign && tag && !campaign.tags_globaux.includes(tag)){
-      campaign.tags_globaux.push(tag.trim())
-      this.saveCampaign()
-      return true
-    }
-    return false
+  addChapitre() {
+    const c = this.getCurrentCampaign()
+    if (!c) return null
+    const newId = Math.max(0, ...(c.chapitres || []).map((x) => x.id || 0)) + 1
+    c.chapitres = c.chapitres || []
+    c.chapitres.push({
+      id: newId,
+      titre: 'Nouveau chapitre',
+      resume: '',
+      tags: [],
+      date: new Date().toISOString(),
+      priorite: 5
+    })
+    this.saveCampaign()
+    return newId
   }
 
-  removeGlobalTag(tag){
-    const campaign = this.getCurrentCampaign()
-    if(campaign){
-      campaign.tags_globaux = campaign.tags_globaux.filter(t=>t!==tag)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  updateStyleNarration(newStyle){
-    if(this.currentSessionId && this.sessions[this.currentSessionId]){
-      this.sessions[this.currentSessionId].campaign.style_narration = newStyle
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  updateMeta(field,value){
-    if(this.currentSessionId && this.sessions[this.currentSessionId]){
-      this.sessions[this.currentSessionId].campaign.meta[field] = value
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  // === Chapitres ===
-  addChapitre(){
-    const campaign = this.getCurrentCampaign()
-    if(campaign){
-      const newId = Math.max(0,...campaign.chapitres.map(c=>c.id))+1
-      campaign.chapitres.push({id:newId,titre:"Nouveau chapitre",resume:"",tags:[],date:new Date().toISOString(),priorite:5})
-      this.saveCampaign()
-      return newId
-    }
-    return null
-  }
-
-  updateChapitre(id,field,value){
-    const campaign = this.getCurrentCampaign()
-    if(campaign){
-      const chapitre = campaign.chapitres.find(c=>c.id===id)
-      if(chapitre && chapitre[field]!==undefined){
-        chapitre[field]=value
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  addTagToChapitre(chapitreId,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      const chapitre=campaign.chapitres.find(c=>c.id===chapitreId)
-      if(chapitre && !chapitre.tags.includes(tag)){
-        chapitre.tags.push(tag)
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  removeTagFromChapitre(chapitreId,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      const chapitre=campaign.chapitres.find(c=>c.id===chapitreId)
-      if(chapitre){
-        chapitre.tags=chapitre.tags.filter(t=>t!==tag)
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  deleteChapitre(id){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      campaign.chapitres=campaign.chapitres.filter(c=>c.id!==id)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-  // === PNJ ===
-  addPNJ(){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      campaign.pnj_importants.push({nom:"Nouveau PNJ",role:"",description:"",emotion:"C50-A30-P50-H10-R50-J10",caractere:"",valeurs:"",peurs:"",desirs:"",histoire:"",vitesse_evolution:1.0,tags:[],priorite:5})
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  updatePNJ(index,field,value){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.pnj_importants[index]){
-      campaign.pnj_importants[index][field]=value
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  addTagToPNJ(pnjIndex,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.pnj_importants[pnjIndex]){
-      if(!campaign.pnj_importants[pnjIndex].tags.includes(tag)){
-        campaign.pnj_importants[pnjIndex].tags.push(tag)
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  removeTagFromPNJ(pnjIndex,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.pnj_importants[pnjIndex]){
-      campaign.pnj_importants[pnjIndex].tags=campaign.pnj_importants[pnjIndex].tags.filter(t=>t!==tag)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  deletePNJ(index){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.pnj_importants[index]){
-      campaign.pnj_importants.splice(index,1)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  // === Lieux ===
-  addLieu(){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      campaign.lieux_importants.push({nom:"Nouveau lieu",description:"",tags:[],priorite:5})
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  updateLieu(index,field,value){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.lieux_importants[index]){
-      campaign.lieux_importants[index][field]=value
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  addTagToLieu(lieuIndex,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.lieux_importants[lieuIndex]){
-      if(!campaign.lieux_importants[lieuIndex].tags.includes(tag)){
-        campaign.lieux_importants[lieuIndex].tags.push(tag)
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  removeTagFromLieu(lieuIndex,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.lieux_importants[lieuIndex]){
-      campaign.lieux_importants[lieuIndex].tags=campaign.lieux_importants[lieuIndex].tags.filter(t=>t!==tag)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  deleteLieu(index){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.lieux_importants[index]){
-      campaign.lieux_importants.splice(index,1)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  // === Événements ===
-  addEvenement(){
-    const campaign=this.getCurrentCampaign()
-    if(campaign){
-      campaign.evenements_cles.push({titre:"Nouvel événement",description:"",consequences:"",personnages_impliques:[],lieux_impliques:[],tags:[],date:new Date().toISOString(),priorite:5})
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  updateEvenement(index,field,value){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.evenements_cles[index]){
-      campaign.evenements_cles[index][field]=value
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  addTagToEvenement(index,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.evenements_cles[index]){
-      if(!campaign.evenements_cles[index].tags.includes(tag)){
-        campaign.evenements_cles[index].tags.push(tag)
-        this.saveCampaign()
-        return true
-      }
-    }
-    return false
-  }
-
-  removeTagFromEvenement(index,tag){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.evenements_cles[index]){
-      campaign.evenements_cles[index].tags=campaign.evenements_cles[index].tags.filter(t=>t!==tag)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  deleteEvenement(index){
-    const campaign=this.getCurrentCampaign()
-    if(campaign && campaign.evenements_cles[index]){
-      campaign.evenements_cles.splice(index,1)
-      this.saveCampaign()
-      return true
-    }
-    return false
-  }
-
-  // === Gestion tags globaux ===
-  getAvailableTags(){
-    const campaign=this.getCurrentCampaign()
-    if(!campaign) return []
-    return [...new Set([...campaign.tags_globaux,
-      ...campaign.pnj_importants.flatMap(p=>p.tags),
-      ...campaign.lieux_importants.flatMap(l=>l.tags),
-      ...campaign.chapitres.flatMap(c=>c.tags),
-      ...campaign.evenements_cles.flatMap(e=>e.tags)
-    ])]
-  }
-
-  setAvailableTags(tags){
-    const campaign=this.getCurrentCampaign()
-    if(!campaign) return false
-    campaign.tags_globaux=tags
+  updateChapitre(id, field, value) {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    const ch = (c.chapitres || []).find((x) => x.id === id)
+    if (!ch) return false
+    ch[field] = value
     this.saveCampaign()
     return true
   }
+
+  addTagToChapitre(chapitreId, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    const ch = (c.chapitres || []).find((x) => x.id === chapitreId)
+    if (!ch) return false
+    ch.tags = ch.tags || []
+    if (!ch.tags.includes(tag)) {
+      ch.tags.push(tag)
+      this.saveCampaign()
+      return true
+    }
+    return false
+  }
+
+  removeTagFromChapitre(chapitreId, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    const ch = (c.chapitres || []).find((x) => x.id === chapitreId)
+    if (!ch) return false
+    ch.tags = (ch.tags || []).filter((t) => t !== tag)
+    this.saveCampaign()
+    return true
+  }
+
+  deleteChapitre(id) {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    c.chapitres = (c.chapitres || []).filter((x) => x.id !== id)
+    this.saveCampaign()
+    return true
+  }
+
+  addPNJ() {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    c.pnj_importants = c.pnj_importants || []
+    c.pnj_importants.push({
+      nom: 'Nouveau PNJ',
+      role: '',
+      description: '',
+      emotion: 'C50-A30-P50-H10-R50-J10',
+      caractere: '',
+      valeurs: '',
+      peurs: '',
+      desirs: '',
+      histoire: '',
+      vitesse_evolution: 1.0,
+      tags: [],
+      priorite: 5
+    })
+    this.saveCampaign()
+    return true
+  }
+
+  updatePNJ(index, field, value) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.pnj_importants || [])[index]) return false
+    c.pnj_importants[index][field] = value
+    this.saveCampaign()
+    return true
+  }
+
+  addTagToPNJ(pnjIndex, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.pnj_importants || [])[pnjIndex]) return false
+    const p = c.pnj_importants[pnjIndex]
+    p.tags = p.tags || []
+    if (!p.tags.includes(tag)) {
+      p.tags.push(tag)
+      this.saveCampaign()
+      return true
+    }
+    return false
+  }
+
+  removeTagFromPNJ(pnjIndex, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.pnj_importants || [])[pnjIndex]) return false
+    c.pnj_importants[pnjIndex].tags = (c.pnj_importants[pnjIndex].tags || []).filter((t) => t !== tag)
+    this.saveCampaign()
+    return true
+  }
+
+  deletePNJ(index) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.pnj_importants || [])[index]) return false
+    c.pnj_importants.splice(index, 1)
+    this.saveCampaign()
+    return true
+  }
+
+  addLieu() {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    c.lieux_importants = c.lieux_importants || []
+    c.lieux_importants.push({
+      nom: 'Nouveau lieu',
+      description: '',
+      tags: [],
+      priorite: 5
+    })
+    this.saveCampaign()
+    return true
+  }
+
+  updateLieu(index, field, value) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.lieux_importants || [])[index]) return false
+    c.lieux_importants[index][field] = value
+    this.saveCampaign()
+    return true
+  }
+
+  addTagToLieu(lieuIndex, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.lieux_importants || [])[lieuIndex]) return false
+    const l = c.lieux_importants[lieuIndex]
+    l.tags = l.tags || []
+    if (!l.tags.includes(tag)) {
+      l.tags.push(tag)
+      this.saveCampaign()
+      return true
+    }
+    return false
+  }
+
+  removeTagFromLieu(lieuIndex, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.lieux_importants || [])[lieuIndex]) return false
+    c.lieux_importants[lieuIndex].tags = (c.lieux_importants[lieuIndex].tags || []).filter((t) => t !== tag)
+    this.saveCampaign()
+    return true
+  }
+
+  deleteLieu(index) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.lieux_importants || [])[index]) return false
+    c.lieux_importants.splice(index, 1)
+    this.saveCampaign()
+    return true
+  }
+
+  addEvenement() {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    c.evenements_cles = c.evenements_cles || []
+    c.evenements_cles.push({
+      titre: 'Nouvel événement',
+      description: '',
+      consequences: '',
+      personnages_impliques: [],
+      lieux_impliques: [],
+      tags: [],
+      date: new Date().toISOString(),
+      priorite: 5
+    })
+    this.saveCampaign()
+    return true
+  }
+
+  updateEvenement(index, field, value) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.evenements_cles || [])[index]) return false
+    c.evenements_cles[index][field] = value
+    this.saveCampaign()
+    return true
+  }
+
+  addTagToEvenement(index, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.evenements_cles || [])[index]) return false
+    const e = c.evenements_cles[index]
+    e.tags = e.tags || []
+    if (!e.tags.includes(tag)) {
+      e.tags.push(tag)
+      this.saveCampaign()
+      return true
+    }
+    return false
+  }
+
+  removeTagFromEvenement(index, tag) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.evenements_cles || [])[index]) return false
+    c.evenements_cles[index].tags = (c.evenements_cles[index].tags || []).filter((t) => t !== tag)
+    this.saveCampaign()
+    return true
+  }
+
+  deleteEvenement(index) {
+    const c = this.getCurrentCampaign()
+    if (!c || !(c.evenements_cles || [])[index]) return false
+    c.evenements_cles.splice(index, 1)
+    this.saveCampaign()
+    return true
+  }
+
+  getAvailableTags() {
+    const c = this.getCurrentCampaign()
+    if (!c) return []
+    const allTags = [
+      ...(c.tags_globaux || []),
+      ...(c.pnj_importants || []).flatMap((p) => p.tags || []),
+      ...(c.lieux_importants || []).flatMap((l) => l.tags || []),
+      ...(c.chapitres || []).flatMap((ch) => ch.tags || []),
+      ...(c.evenements_cles || []).flatMap((e) => e.tags || [])
+    ]
+    return [...new Set(allTags)]
+  }
+
+  setAvailableTags(tags) {
+    const c = this.getCurrentCampaign()
+    if (!c) return false
+    c.tags_globaux = tags
+    this.saveCampaign()
+    return true
+  }
+
+  findTagsInMessage(message) {
+    if (!message) return []
+    const c = this.getCurrentCampaign()
+    if (!c) return []
+
+    const m = message.toLowerCase()
+    const found = new Set()
+
+    if (Array.isArray(c.tags_globaux)) {
+      c.tags_globaux.forEach((t) => {
+        if (m.includes(String(t).toLowerCase())) found.add(t)
+      })
+    }
+
+    if (Array.isArray(c.pnj_importants)) {
+      c.pnj_importants.forEach((p) => {
+        if (p.nom && m.includes(p.nom.toLowerCase())) {
+          found.add(p.nom)
+          if (Array.isArray(p.tags)) {
+            p.tags.forEach((t) => found.add(t))
+          }
+        }
+      })
+    }
+
+    if (Array.isArray(c.lieux_importants)) {
+      c.lieux_importants.forEach((l) => {
+        if (l.nom && m.includes(l.nom.toLowerCase())) {
+          found.add(l.nom)
+          if (Array.isArray(l.tags)) {
+            l.tags.forEach((t) => found.add(t))
+          }
+        }
+      })
+    }
+
+    return Array.from(found).slice(0, 5)
+  }
+
+  getElementsByTags(tags) {
+    const c = this.getCurrentCampaign()
+    if (!c || !tags || tags.length === 0) return ''
+
+    let output = '\n// CONTEXTE RÉCENT:\n'
+
+    tags.forEach((tag) => {
+      const lieux = (c.lieux_importants || []).filter(
+        (l) => (l.tags || []).includes(tag) || (l.nom || '').toLowerCase().includes(String(tag).toLowerCase())
+      )
+      if (lieux.length) {
+        output += `LIEUX[${tag}]: ${lieux.map((l) => l.nom).join(', ')}\n`
+      }
+
+      const pnj = (c.pnj_importants || []).filter(
+        (p) => (p.tags || []).includes(tag) || (p.nom || '').toLowerCase().includes(String(tag).toLowerCase())
+      )
+      if (pnj.length) {
+        output += `PNJ[${tag}]: ${pnj.map((p) => p.nom).join(', ')}\n`
+      }
+    })
+
+    return output
+  }
+
+  decoderEmotions(code) {
+    const defaults = {
+      confiance: 50,
+      amour: 30,
+      peur: 50,
+      haine: 10,
+      respect: 50,
+      jalousie: 10
+    }
+
+    if (!code) return defaults
+
+    const out = { ...defaults }
+    const emotionMap = {
+      C: 'confiance',
+      A: 'amour',
+      P: 'peur',
+      H: 'haine',
+      R: 'respect',
+      J: 'jalousie'
+    }
+
+    code.split('-').forEach((part) => {
+      const key = part[0]
+      const value = parseInt(part.slice(1), 10)
+      if (emotionMap[key] && !Number.isNaN(value)) {
+        out[emotionMap[key]] = Math.max(0, Math.min(100, value))
+      }
+    })
+
+    return out
+  }
+
+  encoderEmotions(obj) {
+    const keyMap = {
+      confiance: 'C',
+      amour: 'A',
+      peur: 'P',
+      haine: 'H',
+      respect: 'R',
+      jalousie: 'J'
+    }
+    return Object.entries(obj)
+      .map(([k, v]) => `${keyMap[k]}${v}`)
+      .join('-')
+  }
+
+  getEmotionDescription(v) {
+    if (v >= 80) return 'Très élevé'
+    if (v >= 60) return 'Élevé'
+    if (v >= 40) return 'Moyen'
+    if (v >= 20) return 'Faible'
+    return 'Très faible'
+  }
+
+  getEmotionColor(v) {
+    if (v >= 75) return 'text-green-300'
+    if (v >= 50) return 'text-yellow-300'
+    if (v >= 25) return 'text-orange-300'
+    return 'text-red-300'
+  }
+
+  getVitesseDescription(v) {
+    if (v >= 1.5) return 'Rapide'
+    if (v >= 1.0) return 'Normal'
+    return 'Lent'
+  }
+
+  processPNJUpdates(updates) {
+    const c = this.getCurrentCampaign()
+    if (!c) return
+
+    updates.forEach(({ nom, emotion, changement, raison }) => {
+      const pnj = (c.pnj_importants || []).find((p) => p.nom === nom)
+      if (pnj) {
+        if (emotion) {
+          pnj.emotion = emotion
+        }
+        if (changement) {
+          pnj.histoire = (pnj.histoire || '') + `\n[${new Date().toISOString()}] ${raison}: ${changement}`
+        }
+      }
+    })
+
+    this.saveCampaign()
+  }
+
+  processAISaves(saves) {
+    const c = this.getCurrentCampaign()
+    if (!c) return
+
+    saves.forEach(({ type, ...data }) => {
+      if (type === 'CHAPITRE') {
+        c.chapitres = c.chapitres || []
+        const id = Math.max(0, ...(c.chapitres || []).map((x) => x.id || 0)) + 1
+        c.chapitres.push({
+          id,
+          titre: data.titre,
+          resume: data.resume,
+          tags: data.tags || [],
+          date: new Date().toISOString(),
+          priorite: 5
+        })
+      } else if (type === 'PNJ') {
+        c.pnj_importants = c.pnj_importants || []
+        const existing = (c.pnj_importants || []).find((p) => p.nom === data.nom)
+        if (existing) {
+          existing.description = data.description
+          existing.tags = data.tags || existing.tags
+        } else {
+          c.pnj_importants.push({
+            nom: data.nom,
+            role: data.role,
+            description: data.description,
+            emotion: 'C50-A30-P50-H10-R50-J10',
+            caractere: '',
+            valeurs: '',
+            peurs: '',
+            desirs: '',
+            histoire: '',
+            vitesse_evolution: 1.0,
+            tags: data.tags || [],
+            priorite: 5
+          })
+        }
+      } else if (type === 'LIEU') {
+        c.lieux_importants = c.lieux_importants || []
+        const existing = (c.lieux_importants || []).find((l) => l.nom === data.nom)
+        if (existing) {
+          existing.description = data.description
+          existing.tags = data.tags || existing.tags
+        } else {
+          c.lieux_importants.push({
+            nom: data.nom,
+            description: data.description,
+            tags: data.tags || [],
+            priorite: 5
+          })
+        }
+      } else if (type === 'EVENEMENT') {
+        c.evenements_cles = c.evenements_cles || []
+        c.evenements_cles.push({
+          titre: data.titre,
+          description: data.description,
+          consequences: data.consequences,
+          personnages_impliques: [],
+          lieux_impliques: [],
+          tags: data.tags || [],
+          date: new Date().toISOString(),
+          priorite: 5
+        })
+      }
+    })
+
+    this.saveCampaign()
+  }
+
+  generateOptimizedContext(userMessage, messageCount) {
+    const c = this.getCurrentCampaign()
+    if (!c) return 'Aucun contexte de campagne.'
+
+    const tagsInMessage = this.findTagsInMessage(userMessage)
+    const context = this.getElementsByTags(tagsInMessage)
+
+    let output = `CAMPAGNE: ${c.meta?.titre || 'Sans titre'}\n\n`
+
+    if (c.meta?.resume_global) {
+      output += `RÉSUMÉ: ${c.meta.resume_global}\n\n`
+    }
+
+    if (c.chapitres && c.chapitres.length > 0) {
+      output += `CHAPITRES (${c.chapitres.length}):\n`
+      c.chapitres.slice(0, 3).forEach((ch) => {
+        output += `- ${ch.titre}: ${ch.resume}\n`
+      })
+      output += '\n'
+    }
+
+    if (c.pnj_importants && c.pnj_importants.length > 0) {
+      output += `PNJ IMPORTANTS (${c.pnj_importants.length}):\n`
+      c.pnj_importants.slice(0, 3).forEach((pnj) => {
+        output += `- ${pnj.nom} (${pnj.role}): ${pnj.description}\n`
+      })
+      output += '\n'
+    }
+
+    if (c.lieux_importants && c.lieux_importants.length > 0) {
+      output += `LIEUX (${c.lieux_importants.length}):\n`
+      c.lieux_importants.slice(0, 3).forEach((lieu) => {
+        output += `- ${lieu.nom}: ${lieu.description}\n`
+      })
+      output += '\n'
+    }
+
+    if (context) {
+      output += context
+    }
+
+    return output
+  }
 }
 
-let memoryManagerInstance=null
-export function getMemoryManager(){
-  if(!memoryManagerInstance) memoryManagerInstance=new MemoryManager()
+let memoryManagerInstance = null
+
+export function getMemoryManager() {
+  if (!memoryManagerInstance) {
+    memoryManagerInstance = new MemoryManager()
+  }
   return memoryManagerInstance
 }
+
 export default MemoryManager

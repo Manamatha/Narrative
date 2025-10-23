@@ -2,9 +2,11 @@
 import { useState, useEffect, useRef } from 'react'
 import MemoryManager from './components/MemoryManager'
 import SessionManager from './components/SessionManager'
+import PINLogin from './components/PINLogin'
 import { getMemoryManager } from './utils/memoryManager'
 
 export default function Home() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [isMemoryOpen, setIsMemoryOpen] = useState(false)
   const [isSessionsOpen, setIsSessionsOpen] = useState(false)
   const [messages, setMessages] = useState([])
@@ -19,31 +21,61 @@ export default function Home() {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
 
+  // Vérifier l'authentification au chargement via cookie session
   useEffect(() => {
-  const memoryManager = getMemoryManager()
-
-  async function init() {
-    try {
-      // 1) on attend que le MemoryManager charge les sessions depuis le serveur
-      await memoryManager.loadFromServer()
-    } catch (err) {
-      // Si la requête échoue, on lève juste un avertissement et on continue avec le local
-      console.warn('Échec chargement serveur, utilisation du local:', err)
+    async function check() {
+      try {
+        const res = await fetch('/api/auth/pin')
+        if (res.ok) {
+          const data = await res.json()
+          if (data.ok) {
+            setIsAuthenticated(true)
+          } else {
+            setIsAuthenticated(false)
+          }
+        } else {
+          setIsAuthenticated(false)
+        }
+      } catch (err) {
+        setIsAuthenticated(false)
+      } finally {
+        setIsLoading(false)
+      }
     }
+    check()
+  }, [])
 
-    // 2) une fois chargé (ou échec), on met à jour l'état
-    setCurrentSession(memoryManager.currentSessionId)
-    // utilise la méthode officielle pour récupérer les messages de la session
-    setMessages(memoryManager.getSessionMessages() || [])
+  // Charger les données une fois authentifié
+  useEffect(() => {
+    if (!isAuthenticated) return
+    const memoryManager = getMemoryManager()
+    async function init() {
+      try {
+        // server-side will determine user via cookie
+        await memoryManager.loadFromServer() // adapted to load without explicit userId
+      } catch (err) {
+        console.warn('Échec chargement serveur, utilisation du local:', err)
+      }
+      setCurrentSession(memoryManager.currentSessionId)
+      setMessages(memoryManager.getSessionMessages() || [])
+      setIsLoading(false)
+    }
+    init()
+  }, [isAuthenticated])
 
-    // 3) on arrête l'écran de chargement
-    setIsLoading(false)
-  }
-
-  init()
-}, [])
 
 
+const handleLoginSuccess = () => {
+  // server has set cookie on login
+  setIsAuthenticated(true)
+}
+
+const handleLogout = () => {
+  // to logout, call server to clear cookie (not implemented) and clear client state
+  setIsAuthenticated(false)
+  setMessages([])
+  setCurrentSession(null)
+}
 
 const handleSessionChange = (sessionId) => {
   const memoryManager = getMemoryManager()
@@ -78,8 +110,8 @@ const handleSessionChange = (sessionId) => {
 
     try {
       const response = await fetch('/api/chat-ai-memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: newMessages,
           allowMemoryWrite: true,
@@ -112,6 +144,11 @@ const handleSessionChange = (sessionId) => {
   const getCurrentSessionName = () => {
     const memoryManager = getMemoryManager()
     return memoryManager.sessions[currentSession]?.name || 'Aventure'
+  }
+
+  // Afficher le login si pas authentifié
+  if (!isAuthenticated) {
+    return <PINLogin onLoginSuccess={handleLoginSuccess} />
   }
 
   if (isLoading) {
@@ -152,6 +189,12 @@ const handleSessionChange = (sessionId) => {
               className="bg-purple-700 hover:bg-purple-800 border border-purple-400 px-4 py-2 rounded shadow-md transition w-full sm:w-auto"
             >
               🧠 Mémoire
+            </button>
+            <button
+              onClick={handleLogout}
+              className="bg-red-700 hover:bg-red-800 border border-red-400 px-4 py-2 rounded shadow-md transition w-full sm:w-auto text-xs sm:text-sm"
+            >
+              🚪 Déconnexion
             </button>
           </div>
         </header>

@@ -1,10 +1,13 @@
 import { NextResponse } from 'next/server'
 import { getMemoryManager } from '@/app/utils/memoryManager'
+import { getUserIdFromRequest } from '@/app/utils/auth'
 
 export async function POST(request) {
   try {
     const body = await request.json()
     const { messages, allowMemoryWrite = false, sessionId = null } = body
+    const userId = await getUserIdFromRequest(request)
+    if (!userId) return NextResponse.json({ error: 'Utilisateur non identifié' }, { status: 401 })
 
     const apiKey = process.env.OPENAI_API_KEY
     if (!apiKey) {
@@ -12,6 +15,11 @@ export async function POST(request) {
     }
 
     const memoryManager = getMemoryManager()
+    
+    // Initialiser le memoryManager avec l'userId
+    if (memoryManager.userId !== userId) {
+      await memoryManager.loadFromServer(userId)
+    }
     
     if (sessionId && memoryManager.currentSessionId !== sessionId) {
       memoryManager.switchSession(sessionId)

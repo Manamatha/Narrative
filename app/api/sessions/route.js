@@ -1,14 +1,13 @@
 import { PrismaClient } from '@prisma/client'
+import { getUserIdFromRequest } from '@/app/utils/auth'
 
 const prisma = new PrismaClient()
 
 // GET /api/sessions -> recupère les sessions de l'utilisateur
 export async function GET(req) {
   try {
-    const userId = req.headers.get('X-User-ID')
-    if (!userId) {
-      return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
-    }
+    const userId = await getUserIdFromRequest(req)
+    if (!userId) return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
 
     const sessions = await prisma.session.findMany({
       where: { userId },
@@ -29,10 +28,8 @@ export async function GET(req) {
 export async function POST(req) {
   try {
     const body = await req.json()
-    const userId = req.headers.get('X-User-ID')
-    if (!userId) {
-      return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
-    }
+    const userId = await getUserIdFromRequest(req)
+    if (!userId) return new Response(JSON.stringify({ ok: false, error: 'userId manquant' }), { status: 400 })
 
     const session = body.id
       ? await prisma.session.update({
@@ -63,11 +60,8 @@ export async function DELETE(req) {
   try {
     const body = await req.json()
     const { id } = body
-    const userId = req.headers.get('X-User-ID')
-    
-    if (!id || !userId) {
-      return new Response(JSON.stringify({ ok: false, error: 'ID ou userId manquant' }), { status: 400 })
-    }
+    const userId = await getUserIdFromRequest(req)
+    if (!id || !userId) return new Response(JSON.stringify({ ok: false, error: 'ID ou userId manquant' }), { status: 400 })
 
     // Verifier que la session appartient a l'utilisateur
     const session = await prisma.session.findUnique({ where: { id } })
