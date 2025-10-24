@@ -153,7 +153,7 @@ export async function POST(request) {
       }
 
       const hashed = await hashPin(uniquePin)
-      const newUser = await prisma.user.create({ data: { pinHash: hashed } })
+      const newUser = await prisma.user.create({ data: { pin: uniquePin, pinHash: hashed } })
       
       // Créer auth token pour la nouvelle session
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
