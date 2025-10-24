@@ -68,6 +68,7 @@ export default function SessionManager({ isOpen, onClose, onSessionChange }) {
       const res = await fetch('/api/sessions', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ id: sessionId })
       })
       if (!res.ok) throw new Error('Erreur suppression')

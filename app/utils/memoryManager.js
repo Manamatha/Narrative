@@ -10,7 +10,6 @@ class MemoryManager {
   constructor() {
     this.userId = null
     this.sessions = {}
-    this.sessionChats = {}
     this.currentSessionId = null
 
     // 🧠 CACHE ET MÉMOIRE
@@ -49,19 +48,18 @@ class MemoryManager {
               createdAt: row.createdAt,
               lastAccessed: row.lastAccessed
             }
-            this.sessionChats[row.id] = []
+            // Initialiser messages s'il n'existe pas
+            if (!campaign.messages) {
+              campaign.messages = []
+            }
           } catch (e) {
             console.warn('Failed to parse campaign for session', row.id)
           }
         })
       } else {
         // Client-side: charger depuis l'API
-        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
-
         const res = await fetch('/api/sessions', {
-          headers: {
-            ...(token && { 'Authorization': `Bearer ${token}` })
-          }
+          credentials: 'include'
         })
         const data = await res.json()
 
@@ -78,7 +76,10 @@ class MemoryManager {
                 createdAt: session.createdAt,
                 lastAccessed: session.lastAccessed
               }
-              this.sessionChats[session.id] = []
+              // Initialiser messages s'il n'existe pas
+              if (!campaign.messages) {
+                campaign.messages = []
+              }
             } catch (e) {
               console.warn('Failed to parse campaign for session', session.id)
             }
@@ -101,12 +102,8 @@ class MemoryManager {
   async syncFromServer() {
     if (isServer) return
     try {
-      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
-
       const res = await fetch('/api/sessions', {
-        headers: {
-          ...(token && { 'Authorization': `Bearer ${token}` })
-        }
+        credentials: 'include'
       })
       const data = await res.json()
 
@@ -128,6 +125,10 @@ class MemoryManager {
                 createdAt: session.createdAt,
                 lastAccessed: session.lastAccessed
               }
+              // Initialiser messages s'il n'existe pas
+              if (!campaign.messages) {
+                campaign.messages = []
+              }
             }
           } catch (e) {
             console.warn('Failed to parse campaign for session', session.id)
@@ -139,7 +140,6 @@ class MemoryManager {
         Object.keys(this.sessions).forEach(id => {
           if (!serverIds.has(id)) {
             delete this.sessions[id]
-            delete this.sessionChats[id]
           }
         })
       }
@@ -172,12 +172,12 @@ class MemoryManager {
         lieux_importants: [],
         evenements_cles: [],
         tags_globaux: [],
-        memory_enabled: true
+        memory_enabled: true,
+        messages: []
       },
       createdAt: now,
       lastAccessed: now
     }
-    this.sessionChats[sessionId] = []
     this.currentSessionId = sessionId
 
     this.saveSessionToServer(sessionId).catch((e) => {
@@ -196,11 +196,21 @@ class MemoryManager {
   }
 
   getSessionMessages(sessionId = this.currentSessionId) {
-    return this.sessionChats[sessionId] || []
+    const session = this.sessions[sessionId]
+    if (!session || !session.campaign) return []
+    // Initialiser messages s'il n'existe pas
+    if (!session.campaign.messages) {
+      session.campaign.messages = []
+    }
+    return session.campaign.messages
   }
 
   setSessionMessages(messages, sessionId = this.currentSessionId) {
-    this.sessionChats[sessionId] = messages
+    const session = this.sessions[sessionId]
+    if (!session || !session.campaign) return
+    session.campaign.messages = messages
+    // Auto-sauvegarder pour ne pas perdre les messages
+    this.saveSessionToServer(sessionId).catch(() => {})
   }
 
   getCurrentCampaign() {
@@ -236,15 +246,12 @@ class MemoryManager {
         })
       } else {
         // Client-side: utiliser la nouvelle API PUT /api/sessions/[id]
-        // Récupérer le token depuis localStorage
-        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('authToken') : null
-
         const response = await fetch(`/api/sessions/${sessionId}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            ...(token && { 'Authorization': `Bearer ${token}` })
           },
+          credentials: 'include',
           body: JSON.stringify({
             name: payload.name,
             campaign: JSON.stringify(payload.campaign)
@@ -273,6 +280,19 @@ class MemoryManager {
       this.sessions[this.currentSessionId].campaign = updatedCampaign
       // Sauvegarder immédiatement
       this.saveSessionToServer(this.currentSessionId).catch(() => {})
+    }
+  }
+
+  deleteSession(sessionId) {
+    delete this.sessions[sessionId]
+    // Si on supprime la session actuelle, basculer sur une autre
+    if (this.currentSessionId === sessionId) {
+      const remaining = Object.keys(this.sessions)
+      if (remaining.length > 0) {
+        this.currentSessionId = remaining[0]
+      } else {
+        this.currentSessionId = null
+      }
     }
   }
 

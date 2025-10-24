@@ -21,6 +21,15 @@ export default function Home() {
   // Synchroniser les sessions entre appareils (seulement quand il y a un changement)
   useSyncSessions(isAuthenticated)
 
+  // Synchroniser depuis le serveur quand on ouvre les panels
+  useEffect(() => {
+    if (!isAuthenticated) return
+    if (isMemoryOpen || isSessionsOpen) {
+      const memoryManager = getMemoryManager()
+      memoryManager.syncFromServer().catch(() => {})
+    }
+  }, [isMemoryOpen, isSessionsOpen, isAuthenticated])
+
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
@@ -35,6 +44,7 @@ export default function Home() {
           headers: {
             'Content-Type': 'application/json',
           },
+          credentials: 'include',
           body: JSON.stringify({
             action: 'login',
             pin: '0000', // PIN par défaut (sera ignoré)
@@ -86,7 +96,7 @@ const handleLoginSuccess = () => {
 const handleLogout = async () => {
   // Appeler le serveur pour supprimer le token
   try {
-    await fetch('/api/auth/logout', { method: 'POST' })
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' })
   } catch (err) {
     console.error('Erreur déconnexion:', err)
   }
@@ -100,7 +110,7 @@ const handleLogout = async () => {
 const handleSessionChange = (sessionId) => {
   const memoryManager = getMemoryManager()
 
-  // 💾 Sauvegarde les messages actuels dans la session en cours
+  // 💾 Sauvegarde les messages actuels dans la session en cours (et persiste)
   if (currentSession) {
     memoryManager.setSessionMessages(messages, currentSession)
   }
@@ -110,7 +120,7 @@ const handleSessionChange = (sessionId) => {
   setCurrentSession(sessionId)
 
   // 📥 Charge les messages de la nouvelle session
-  const newMessages = memoryManager.getSessionMessages(sessionId)
+  const newMessages = memoryManager.getSessionMessages(sessionId) || []
   setMessages(newMessages)
 }
 
@@ -122,8 +132,9 @@ const handleSessionChange = (sessionId) => {
     const memoryManager = getMemoryManager()
     const newMessages = [...messages, { role: 'user', content: inputMessage }]
     setMessages(newMessages)
+    // Sauvegarde immédiatement les messages dans la campagne (et persiste au serveur)
     if (currentSession) {
-      memoryManager.sessions[currentSession].campaign.messages = newMessages
+      memoryManager.setSessionMessages(newMessages, currentSession)
     }
     const backup = inputMessage
     setInputMessage('')
@@ -134,6 +145,7 @@ const handleSessionChange = (sessionId) => {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           messages: newMessages,
           allowMemoryWrite: true,
@@ -146,13 +158,13 @@ const handleSessionChange = (sessionId) => {
       if (data.error) throw new Error(data.error)
 
       if (data.response) {
-  const finalMessages = [...newMessages, { role: 'assistant', content: data.response }]
-  setMessages(finalMessages)
-  if (currentSession) {
-    memoryManager.setSessionMessages(finalMessages, currentSession)
-    await memoryManager.saveSessionToServer(currentSession) // ☁️ sauvegarde sur le serveur
-  }
-}
+        const finalMessages = [...newMessages, { role: 'assistant', content: data.response }]
+        setMessages(finalMessages)
+        // Sauvegarde les messages finaux avec la réponse de l'IA (et persiste)
+        if (currentSession) {
+          memoryManager.setSessionMessages(finalMessages, currentSession)
+        }
+      }
 
     } catch (err) {
       console.error(err)
