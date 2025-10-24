@@ -25,11 +25,37 @@ export default function Home() {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
 
-  // Authentification automatique (PIN désactivé)
+  // Authentification automatique avec USER_KEY fixe
   useEffect(() => {
-    // Considérer l'utilisateur comme toujours authentifié
-    setIsAuthenticated(true)
-    setIsLoading(false)
+    async function autoLogin() {
+      try {
+        // Créer un cookie de session avec un identifiant utilisateur fixe
+        const response = await fetch('/api/auth/pin', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            action: 'login',
+            pin: '0000', // PIN par défaut (sera ignoré)
+            userKey: 'user_moi' // Utilise la valeur de USER_KEY
+          }),
+        });
+        
+        if (response.ok) {
+          // Considérer l'utilisateur comme authentifié
+          setIsAuthenticated(true);
+        } else {
+          console.error('Erreur d\'authentification automatique');
+        }
+      } catch (err) {
+        console.error('Erreur lors de l\'authentification automatique:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    
+    autoLogin();
   }, [])
 
   // Charger les données une fois authentifié

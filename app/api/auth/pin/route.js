@@ -11,11 +11,11 @@ function generateUniquePin() {
 }
 
 // POST /api/auth/pin
-// Body: { action: 'login' | 'create', pin?: 'XXXX' }
+// Body: { action: 'login' | 'create', pin?: 'XXXX', userKey?: 'user_xxx' }
 export async function POST(request) {
   try {
     const body = await request.json()
-    const { action, pin } = body
+    const { action, pin, userKey } = body
 
     if (!action || (action !== 'login' && action !== 'create')) {
       return NextResponse.json(
@@ -24,8 +24,45 @@ export async function POST(request) {
       )
     }
 
-    // 🔓 LOGIN - Utilisateur rentre son PIN
+    // 🔓 LOGIN - Utilisateur rentre son PIN ou utilise userKey
     if (action === 'login') {
+      // Si userKey est fourni, on l'utilise pour l'authentification
+      if (userKey && userKey === process.env.USER_KEY) {
+        // Trouver ou créer l'utilisateur avec le USER_KEY
+        let user = await prisma.user.findFirst({
+          where: { name: 'user_fixed' }
+        });
+        
+        if (!user) {
+          // Créer un utilisateur fixe s'il n'existe pas
+          user = await prisma.user.create({
+            data: {
+              name: 'user_fixed',
+              pinHash: await hashPin('0000') // PIN par défaut
+            }
+          });
+        }
+        
+        // Mise à jour du timestamp d'accès
+        await prisma.user.update({ where: { id: user.id }, data: { lastUsed: new Date() } });
+        
+        // Créer auth token et le retourner via cookie
+        const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+        await prisma.authToken.create({ data: { userId: user.id, token } });
+        
+        // Créer la réponse avec le cookie sécurisé
+        const response = NextResponse.json({ ok: true, message: 'Connecté avec USER_KEY' });
+        response.cookies.set('sessionToken', token, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          path: '/',
+          maxAge: 60 * 60 * 24 * 30 // 30 jours
+        });
+        return response;
+      }
+      
+      // Vérification PIN standard si userKey n'est pas fourni ou invalide
       if (!pin || pin.length !== 4 || !/^\d+$/.test(pin)) {
         return NextResponse.json(
           { error: 'PIN invalide. Doit être 4 chiffres' },
@@ -33,8 +70,8 @@ export async function POST(request) {
         )
       }
 
-  // We store hashedPin in user.pinHash or fallback to old pin field if legacy
-  const found = await prisma.user.findMany()
+      // We store hashedPin in user.pinHash or fallback to old pin field if legacy
+      const found = await prisma.user.findMany()
       // Try to find by comparing all users (small scale since PIN is short)
       let matchedUser = null
       for (const u of found) {
