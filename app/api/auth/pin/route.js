@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
+import prisma from '@/app/lib/prisma'
 import { hashPin, comparePin } from '@/app/utils/auth'
 import crypto from 'crypto'
-
-const prisma = new PrismaClient()
 
 // Génère un PIN unique (4 chiffres)
 function generateUniquePin() {
@@ -29,7 +27,8 @@ export async function POST(request) {
       // Si userKey est fourni, on l'utilise pour l'authentification
       if (userKey && userKey === process.env.USER_KEY) {
         // Trouver ou créer l'utilisateur avec le USER_KEY
-        let user = await prisma.user.findUnique({
+        // FIX: Utilisation de findFirst pour plus de robustesse sur le champ PIN
+        let user = await prisma.user.findFirst({
           where: { pin: '0000' }
         });
         
@@ -77,7 +76,8 @@ export async function POST(request) {
       let matchedUser = null
       for (const u of found) {
         const stored = u.pinHash || u.pin
-        if (await comparePin(pin, stored)) { matchedUser = u; break }
+        // Check for stored value existence before comparing
+        if (stored && await comparePin(pin, stored)) { matchedUser = u; break }
       }
       if (!matchedUser) return NextResponse.json({ error: 'PIN incorrect' }, { status: 401 })
       const user = matchedUser
@@ -88,7 +88,8 @@ export async function POST(request) {
       // Log du login
       const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip')
       const userAgent = request.headers.get('user-agent')
-      await prisma.pinLog.create({ data: { userId: user.id, ipAddress, userAgent } })
+      // FIX: Utilisation du bon nom de modèle PINLog
+      await prisma.pINLog.create({ data: { userId: user.id, ipAddress, userAgent } }) 
 
       // Créer auth token et le retourner via cookie
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
@@ -121,7 +122,8 @@ export async function POST(request) {
         }
         
         // Vérifier que ce PIN n'existe pas déjà
-        const existing = await prisma.user.findUnique({
+        // FIX: Utilisation de findFirst pour plus de robustesse
+        const existing = await prisma.user.findFirst({
           where: { pin: uniquePin }
         })
         if (existing) {
@@ -137,7 +139,8 @@ export async function POST(request) {
 
         while (pinExists && attempts < 100) {
           uniquePin = generateUniquePin()
-          const existing = await prisma.user.findUnique({
+          // FIX: Utilisation de findFirst pour plus de robustesse
+          const existing = await prisma.user.findFirst({
             where: { pin: uniquePin }
           })
           pinExists = !!existing
@@ -153,7 +156,19 @@ export async function POST(request) {
       }
 
       const hashed = await hashPin(uniquePin)
-      const newUser = await prisma.user.create({ data: { pinHash: hashed } })
+      let newUser
+      try {
+        newUser = await prisma.user.create({ data: { pin: uniquePin, pinHash: hashed } })
+      } catch (dbError) {
+        // Constraint violation - le PIN existe déjà (race condition)
+        if (dbError.code === 'P2002') {
+          return NextResponse.json(
+            { error: 'Ce PIN est déjà utilisé. Choisissez-en un autre' },
+            { status: 400 }
+          )
+        }
+        throw dbError
+      }
       
       // Créer auth token pour la nouvelle session
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
@@ -173,8 +188,10 @@ export async function POST(request) {
 
   } catch (error) {
     console.error('❌ Erreur authentification:', error)
+    // S'assurer que l'erreur est bien remontée
+    const errorMessage = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: `Erreur interne: ${error.message}` },
+      { error: `Erreur interne: ${errorMessage}` },
       { status: 500 }
     )
   }
@@ -197,7 +214,8 @@ export async function GET(request) {
     if(!user) return NextResponse.json({ ok:false, error:'Utilisateur introuvable' }, { status:404 })
     return NextResponse.json({ ok:true, userId: user.id, createdAt: user.createdAt })
   } catch (error) {
-    console.error('\u274c Erreur vérification session:', error)
-    return NextResponse.json({ error: `Erreur interne: ${error.message}` }, { status: 500 })
+    console.error('❌ Erreur vérification session:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ error: `Erreur interne: ${errorMessage}` }, { status: 500 })
   }
 }

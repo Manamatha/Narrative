@@ -8,6 +8,7 @@ export default function PINLogin({ onLoginSuccess }) {
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [newPin, setNewPin] = useState('')
+  const [createdPin, setCreatedPin] = useState('')
 
   const handleLogin = async (e) => {
     e.preventDefault()
@@ -69,15 +70,17 @@ export default function PINLogin({ onLoginSuccess }) {
       if (!response.ok) {
         setError(data.error || 'Erreur lors de la création')
         setIsLoading(false)
+        setNewPin('')
         return
       }
 
-      // Le cookie est automatiquement géré par le navigateur
-      // Notifier le parent que la connexion a réussi
-      onLoginSuccess()
+      // Succès! Afficher le message de succès avec le PIN créé
+      setCreatedPin(newPin)
+      setIsLoading(false)
     } catch (err) {
       setError(`Erreur: ${err.message}`)
       setIsLoading(false)
+      setNewPin('')
     }
   }
 
@@ -87,15 +90,17 @@ export default function PINLogin({ onLoginSuccess }) {
         <h1 className={styles.title}>🎭 JDR-IA Narrative</h1>
         <p className={styles.subtitle}>Connectez-vous ou créez un compte</p>
 
-        {newPin && (
+        {createdPin && (
           <div className={styles.successBox}>
             <h2>✨ Nouveau compte créé!</h2>
-            <p>Votre PIN: <strong className={styles.pin}>{newPin}</strong></p>
+            <p>Votre PIN: <strong className={styles.pin}>{createdPin}</strong></p>
             <p className={styles.hint}>Mémorisez ce PIN pour vous connecter sur tous vos appareils</p>
             <button
               onClick={() => {
+                setCreatedPin('')
                 setNewPin('')
                 setPin('')
+                onLoginSuccess()
               }}
               className={styles.button}
             >
@@ -104,7 +109,7 @@ export default function PINLogin({ onLoginSuccess }) {
           </div>
         )}
 
-        {!newPin && !showCreate && (
+        {!createdPin && !showCreate && (
           <form onSubmit={handleLogin} className={styles.form}>
             <div className={styles.inputGroup}>
               <label htmlFor="pin">Entrez votre PIN (4 chiffres)</label>
@@ -143,7 +148,7 @@ export default function PINLogin({ onLoginSuccess }) {
           </form>
         )}
 
-        {!newPin && showCreate && (
+        {!createdPin && showCreate && (
           <form onSubmit={handleCreate} className={styles.form}>
             <div className={styles.inputGroup}>
               <label htmlFor="newPin">Choisissez votre PIN (4 chiffres)</label>

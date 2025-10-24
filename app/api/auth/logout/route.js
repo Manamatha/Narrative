@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
-import { PrismaClient } from '@prisma/client'
-
-const prisma = new PrismaClient()
+// Utilisation du singleton unique de Prisma
+import prisma from '@/app/lib/prisma'
 
 export async function POST(request) {
+  let token = null;
   try {
     // Récupérer le token du cookie
     const cookieHeader = request.headers.get('cookie') || ''
@@ -13,37 +13,40 @@ export async function POST(request) {
         return [k.trim(), v ? v.trim() : '']
       })
     )
-    const token = cookies['sessionToken']
+    token = cookies['sessionToken']
     
-    // Supprimer le token de la base de données
+    // 1. Supprimer le token de la base de données (si présent)
     if (token) {
       try {
-        await prisma.authToken.delete({ where: { token } })
+        // Suppression robuste de l'AuthToken
+        await prisma.authToken.deleteMany({
+          where: { token: token }
+        })
       } catch (err) {
-        // Token n'existe pas, c'est ok
-        console.log('Token non trouvé dans la DB')
+        // Ignorer l'erreur si le token n'existe plus
+        console.warn('Le token de session n\'a pas pu être supprimé de la DB (peut être déjà expiré):', err.message)
       }
     }
     
-    // Créer la réponse avec le cookie supprimé
-    const setCookie = 'sessionToken=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0'
+    // 2. Supprimer le cookie du navigateur
+    const response = NextResponse.json({ ok: true, message: 'Déconnecté avec succès' })
     
-    return new Response(
-      JSON.stringify({ ok: true, message: 'Déconnecté avec succès' }),
-      { 
-        status: 200, 
-        headers: { 
-          'Set-Cookie': setCookie,
-          'Content-Type': 'application/json'
-        }
-      }
-    )
+    // Utilisation de la méthode de suppression de cookie recommandée
+    response.cookies.set('sessionToken', '', {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 0 // Expire immédiatement
+    })
+    
+    return response
+
   } catch (error) {
-    console.error('Erreur déconnexion:', error)
+    console.error('❌ Erreur déconnexion:', error)
     return NextResponse.json(
-      { error: `Erreur: ${error.message}` },
+      { error: `Erreur interne lors de la déconnexion: ${error.message}` },
       { status: 500 }
     )
   }
 }
-
