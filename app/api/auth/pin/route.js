@@ -29,16 +29,17 @@ export async function POST(request) {
       // Si userKey est fourni, on l'utilise pour l'authentification
       if (userKey && userKey === process.env.USER_KEY) {
         // Trouver ou créer l'utilisateur avec le USER_KEY
-        let user = await prisma.user.findFirst({
-          where: { name: 'user_fixed' }
+        let user = await prisma.user.findUnique({
+          where: { pin: '0000' }
         });
         
         if (!user) {
           // Créer un utilisateur fixe s'il n'existe pas
+          const hashedPin = await hashPin('0000');
           user = await prisma.user.create({
             data: {
-              name: 'user_fixed',
-              pinHash: await hashPin('0000') // PIN par défaut
+              pin: '0000',
+              pinHash: hashedPin
             }
           });
         }
@@ -55,7 +56,7 @@ export async function POST(request) {
         response.cookies.set('sessionToken', token, {
           httpOnly: true,
           secure: process.env.NODE_ENV === 'production',
-          sameSite: 'strict',
+          sameSite: 'lax',
           path: '/',
           maxAge: 60 * 60 * 24 * 30 // 30 jours
         });
@@ -87,7 +88,7 @@ export async function POST(request) {
       // Log du login
       const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip')
       const userAgent = request.headers.get('user-agent')
-      await prisma.pINLog.create({ data: { userId: user.id, ipAddress, userAgent } })
+      await prisma.pinLog.create({ data: { userId: user.id, ipAddress, userAgent } })
 
       // Créer auth token et le retourner via cookie
       const token = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)
@@ -98,34 +99,57 @@ export async function POST(request) {
       response.cookies.set('sessionToken', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax',
         path: '/',
         maxAge: 60 * 60 * 24 * 30 // 30 jours
       })
       return response
     }
 
-    // ✨ CREATE - Créer un nouveau compte avec PIN aléatoire
+    // ✨ CREATE - Créer un nouveau compte avec PIN choisi ou aléatoire
     if (action === 'create') {
-      let uniquePin
-      let pinExists = true
-      let attempts = 0
-
-      // Trouver un PIN unique
-      while (pinExists && attempts < 100) {
-        uniquePin = generateUniquePin()
+      // Si un PIN est fourni, l'utiliser; sinon en générer un
+      let uniquePin = pin || null
+      
+      if (uniquePin) {
+        // Valider le PIN fourni
+        if (uniquePin.length !== 4 || !/^\d+$/.test(uniquePin)) {
+          return NextResponse.json(
+            { error: 'PIN invalide. Doit être 4 chiffres' },
+            { status: 400 }
+          )
+        }
+        
+        // Vérifier que ce PIN n'existe pas déjà
         const existing = await prisma.user.findUnique({
           where: { pin: uniquePin }
         })
-        pinExists = !!existing
-        attempts++
-      }
+        if (existing) {
+          return NextResponse.json(
+            { error: 'Ce PIN est déjà utilisé. Choisissez-en un autre' },
+            { status: 400 }
+          )
+        }
+      } else {
+        // Générer un PIN aléatoire unique
+        let pinExists = true
+        let attempts = 0
 
-      if (pinExists) {
-        return NextResponse.json(
-          { error: 'Impossible de générer un PIN unique' },
-          { status: 500 }
-        )
+        while (pinExists && attempts < 100) {
+          uniquePin = generateUniquePin()
+          const existing = await prisma.user.findUnique({
+            where: { pin: uniquePin }
+          })
+          pinExists = !!existing
+          attempts++
+        }
+
+        if (pinExists) {
+          return NextResponse.json(
+            { error: 'Impossible de générer un PIN unique' },
+            { status: 500 }
+          )
+        }
       }
 
       const hashed = await hashPin(uniquePin)
@@ -140,7 +164,7 @@ export async function POST(request) {
       response.cookies.set('sessionToken', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: 'lax',
         path: '/',
         maxAge: 60 * 60 * 24 * 30 // 30 jours
       })

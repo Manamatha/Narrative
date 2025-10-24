@@ -18,6 +18,7 @@ export default function PINLogin({ onLoginSuccess }) {
       const response = await fetch('/api/auth/pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           action: 'login',
           pin: pin.trim()
@@ -46,12 +47,20 @@ export default function PINLogin({ onLoginSuccess }) {
     setError('')
     setIsLoading(true)
 
+    if (!newPin || newPin.length !== 4 || !/^\d+$/.test(newPin)) {
+      setError('Entrez un PIN valide (4 chiffres)')
+      setIsLoading(false)
+      return
+    }
+
     try {
       const response = await fetch('/api/auth/pin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
-          action: 'create'
+          action: 'create',
+          pin: newPin
         })
       })
 
@@ -64,9 +73,6 @@ export default function PINLogin({ onLoginSuccess }) {
       }
 
       // Le cookie est automatiquement géré par le navigateur
-      // Afficher le PIN à l'utilisateur
-      setNewPin(data.pin)
-
       // Notifier le parent que la connexion a réussi
       onLoginSuccess()
     } catch (err) {
@@ -138,29 +144,46 @@ export default function PINLogin({ onLoginSuccess }) {
         )}
 
         {!newPin && showCreate && (
-          <div className={styles.createBox}>
-            <p>Un nouveau PIN sera généré pour vous.</p>
-            <p className={styles.hint}>Ce PIN vous permettra de jouer sur tous vos appareils.</p>
+          <form onSubmit={handleCreate} className={styles.form}>
+            <div className={styles.inputGroup}>
+              <label htmlFor="newPin">Choisissez votre PIN (4 chiffres)</label>
+              <input
+                id="newPin"
+                type="text"
+                maxLength="4"
+                placeholder="1234"
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
+                disabled={isLoading}
+                className={styles.input}
+                autoFocus
+              />
+            </div>
+
+            <p className={styles.hint}>Ce PIN vous permettra de vous connecter sur tous vos appareils</p>
+
             {error && <div className={styles.error}>{error}</div>}
 
             <button
-              onClick={handleCreate}
-              disabled={isLoading}
+              type="submit"
+              disabled={newPin.length !== 4 || isLoading}
               className={styles.button}
             >
-              {isLoading ? 'Création...' : 'Générer mon PIN'}
+              {isLoading ? 'Création...' : 'Créer mon compte'}
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 setShowCreate(false)
+                setNewPin('')
                 setError('')
               }}
               className={`${styles.button} ${styles.secondary}`}
             >
               Annuler
             </button>
-          </div>
+          </form>
         )}
       </div>
     </div>

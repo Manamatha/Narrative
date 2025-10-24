@@ -34,38 +34,28 @@ export default function Home() {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight
   }, [messages])
 
-  // Authentification automatique avec USER_KEY fixe
+  // Vérifier si l'utilisateur a une session valide au chargement
   useEffect(() => {
-    async function autoLogin() {
+    async function checkSession() {
       try {
-        // Créer un cookie de session avec un identifiant utilisateur fixe
+        // Vérifier si une session existe déjà (cookie valide)
         const response = await fetch('/api/auth/pin', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          method: 'GET',
           credentials: 'include',
-          body: JSON.stringify({
-            action: 'login',
-            pin: '0000', // PIN par défaut (sera ignoré)
-            userKey: 'user_moi' // Utilise la valeur de USER_KEY
-          }),
         });
         
         if (response.ok) {
-          // Considérer l'utilisateur comme authentifié
+          // L'utilisateur a une session valide, le connecter automatiquement
           setIsAuthenticated(true);
-        } else {
-          console.error('Erreur d\'authentification automatique');
         }
       } catch (err) {
-        console.error('Erreur lors de l\'authentification automatique:', err);
+        console.error('Erreur lors de la vérification de session:', err);
       } finally {
         setIsLoading(false);
       }
     }
     
-    autoLogin();
+    checkSession();
   }, [])
 
   // Charger les données une fois authentifié
@@ -180,10 +170,10 @@ const handleSessionChange = (sessionId) => {
     return memoryManager.sessions[currentSession]?.name || 'Aventure'
   }
 
-  // PIN désactivé - ne jamais afficher l'écran de login
-  // if (!isAuthenticated) {
-  //   return <PINLogin onLoginSuccess={handleLoginSuccess} />
-  // }
+  // Afficher le formulaire de connexion si pas authentifié
+  if (!isAuthenticated) {
+    return <PINLogin onLoginSuccess={handleLoginSuccess} />
+  }
 
   if (isLoading) {
     return (
