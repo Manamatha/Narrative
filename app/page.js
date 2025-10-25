@@ -45,6 +45,13 @@ export default function Home() {
         });
         
         if (response.ok) {
+          const data = await response.json()
+          // Récupérer l'userId et le définir dans le MemoryManager IMMÉDIATEMENT
+          if (data.userId) {
+            const memoryManager = getMemoryManager()
+            memoryManager.setUserId(data.userId)
+            console.log(`✅ userId défini au chargement: ${data.userId}`)
+          }
           // L'utilisateur a une session valide, le connecter automatiquement
           setIsAuthenticated(true);
         }
@@ -58,28 +65,60 @@ export default function Home() {
     checkSession();
   }, [])
 
-  // Charger les données une fois authentifié
+  // Charger les données une fois authentifié (userId déjà défini par checkSession ou handleLoginSuccess)
   useEffect(() => {
-    if (!isAuthenticated) return
+    if (!isAuthenticated) {
+      setIsLoading(false)
+      return
+    }
+
     const memoryManager = getMemoryManager()
+    
     async function init() {
       try {
-        // server-side will determine user via cookie
-        await memoryManager.loadFromServer() // adapted to load without explicit userId
+        // userId est déjà défini par checkSession() ou handleLoginSuccess()
+        if (!memoryManager.userId) {
+          console.warn('⚠️ userId non défini, tentative via cookie')
+        }
+
+        // Charger les sessions depuis le serveur
+        // Le serveur utilisera le cookie pour récupérer l'userId
+        await memoryManager.loadFromServer()
+        console.log('✅ Sessions chargées depuis le serveur')
       } catch (err) {
-        console.warn('Échec chargement serveur, utilisation du local:', err)
+        console.error('❌ Erreur chargement serveur:', err)
       }
+
       setCurrentSession(memoryManager.currentSessionId)
       setMessages(memoryManager.getSessionMessages() || [])
       setIsLoading(false)
     }
+
     init()
   }, [isAuthenticated])
 
 
 
-const handleLoginSuccess = () => {
+const handleLoginSuccess = async () => {
   // server has set cookie on login
+  // Récupérer et définir l'userId
+  try {
+    const response = await fetch('/api/auth/pin', {
+      method: 'GET',
+      credentials: 'include'
+    })
+    if (response.ok) {
+      const data = await response.json()
+      if (data.userId) {
+        const memoryManager = getMemoryManager()
+        memoryManager.setUserId(data.userId)
+        console.log(`✅ userId défini après login: ${data.userId}`)
+      }
+    }
+  } catch (err) {
+    console.error('Erreur lors de la synchronisation userId:', err)
+  }
+  
   setIsAuthenticated(true)
 }
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MemoryManager - Isomorphic session & campaign memory system
  * Works on both client (fetch) and server (Prisma)
  * Export: default MemoryManager + named getMemoryManager() singleton
@@ -12,34 +12,34 @@ class MemoryManager {
     this.sessions = {}
     this.currentSessionId = null
 
-    // 🧠 CACHE ET MÉMOIRE
+    // ðŸ§  CACHE ET MÃ‰MOIRE
     this.tagsCacheTimestamp = 0
     this.tagsCache = {}
-    this.importantMemory = {} // Stocke les éléments importants par sessionId
+    this.importantMemory = {} // Stocke les Ã©lÃ©ments importants par sessionId
 
-    // 🔄 THROTTLING DES TAGS - Évite de relire les mêmes tags trop souvent
+    // ðŸ”„ THROTTLING DES TAGS - Ã‰vite de relire les mÃªmes tags trop souvent
     this.tagThrottleMap = {} // { sessionId: { tagName: { lastReadAt, readCount } } }
-    this.tagThrottleInterval = 8 // Lire les infos tous les 8 échanges
+    this.tagThrottleInterval = 8 // Lire les infos tous les 8 Ã©changes
   }
 
   // ------------------------------------------------------------------
-  // [AJOUT] Méthodes d'état de l'utilisateur
+  // [AJOUT] MÃ©thodes d'Ã©tat de l'utilisateur
   // ------------------------------------------------------------------
   /**
-   * Définit l'ID de l'utilisateur. Appelé par le hook d'authentification après vérification.
-   * @param {string | null} userId - L'ID de l'utilisateur connecté, ou null si déconnecté.
+   * DÃ©finit l'ID de l'utilisateur. AppelÃ© par le hook d'authentification aprÃ¨s vÃ©rification.
+   * @param {string | null} userId - L'ID de l'utilisateur connectÃ©, ou null si dÃ©connectÃ©.
    */
   setUserId(userId) {
     this.userId = userId
     if (userId) {
-        console.log(`MemoryManager: userId défini à ${userId}`)
+        console.log(`MemoryManager: userId dÃ©fini Ã  ${userId}`)
     } else {
-        console.log('MemoryManager: userId réinitialisé (déconnexion)')
+        console.log('MemoryManager: userId rÃ©initialisÃ© (dÃ©connexion)')
     }
   }
 
   /**
-   * Récupère l'ID de l'utilisateur actuellement stocké.
+   * RÃ©cupÃ¨re l'ID de l'utilisateur actuellement stockÃ©.
    * @returns {string | null}
    */
   getUserId() {
@@ -55,7 +55,11 @@ class MemoryManager {
   }
 
   async loadFromServer(userId) {
-    this.userId = userId // Définit l'ID de l'utilisateur sur le serveur
+    // Only set userId if provided (server-side)
+    // Client-side: userId already set via setUserId()
+    if (userId) {
+      this.userId = userId
+    }
     try {
       if (isServer) {
         const prisma = await this._getPrismaClient()
@@ -146,7 +150,7 @@ class MemoryManager {
           // Si le code n'est pas 2xx, lever une erreur pour la gestion dans le hook
           // Cela capture le 403/401 si le jeton est invalide
           if (res.status === 401 || res.status === 403) {
-              throw new Error(`Sync échoué: Session non authentifiée ou expirée (Code ${res.status})`);
+              throw new Error(`Sync Ã©chouÃ©: Session non authentifiÃ©e ou expirÃ©e (Code ${res.status})`);
           }
           throw new Error(`Erreur synchronisation: ${res.status}`)
       }
@@ -154,14 +158,14 @@ class MemoryManager {
       const data = await res.json()
 
       if (data.ok && Array.isArray(data.sessions)) {
-        // Mettre à jour les sessions existantes et ajouter les nouvelles
+        // Mettre Ã  jour les sessions existantes et ajouter les nouvelles
         data.sessions.forEach((session) => {
           try {
             const campaign = typeof session.campaign === 'string'
               ? JSON.parse(session.campaign)
               : session.campaign
 
-            // Vérifier si la session a changé
+            // VÃ©rifier si la session a changÃ©
             const existing = this.sessions[session.id]
             if (!existing || new Date(session.lastAccessed) > new Date(existing.lastAccessed)) {
               this.sessions[session.id] = {
@@ -190,7 +194,7 @@ class MemoryManager {
         })
       }
     } catch (err) {
-      // Renvoie l'erreur au hook pour qu'il la gère
+      // Renvoie l'erreur au hook pour qu'il la gÃ¨re
       console.error('syncFromServer error:', err)
       throw err; 
     }
@@ -278,7 +282,7 @@ class MemoryManager {
 
       if (isServer) {
         const prisma = await this._getPrismaClient()
-        // Sur le serveur, on utilise this.userId qui doit avoir été défini par loadFromServer
+        // Sur le serveur, on utilise this.userId qui doit avoir Ã©tÃ© dÃ©fini par loadFromServer
         if (!this.userId) {
             console.error('Server-side save failed: userId is null.');
             return;
@@ -321,7 +325,7 @@ class MemoryManager {
   }
 
   saveCampaign() {
-    // Sauvegarder immédiatement (pas d'attente)
+    // Sauvegarder immÃ©diatement (pas d'attente)
     if (this.currentSessionId) {
       this.saveSessionToServer(this.currentSessionId).catch((err) => {
         console.error('Erreur sauvegarde:', err)
@@ -332,7 +336,7 @@ class MemoryManager {
   updateCampaign(updatedCampaign) {
     if (this.currentSessionId && this.sessions[this.currentSessionId]) {
       this.sessions[this.currentSessionId].campaign = updatedCampaign
-      // Sauvegarder immédiatement
+      // Sauvegarder immÃ©diatement
       this.saveSessionToServer(this.currentSessionId).catch(() => {})
     }
   }
@@ -374,13 +378,13 @@ class MemoryManager {
     if (!ch) return false
     ch[field] = value
 
-    // 🧠 Track la modification du chapitre
+    // ðŸ§  Track la modification du chapitre
     this.trackImportantElement('chapitres', ch.titre, {
       resume: ch.resume,
       tags: ch.tags
     })
 
-    // 🔓 Forcer la lecture des tags du chapitre modifié
+    // ðŸ”“ Forcer la lecture des tags du chapitre modifiÃ©
     this.forceReadElementTags('chapitre', ch.titre)
 
     this.saveCampaign()
@@ -396,7 +400,7 @@ class MemoryManager {
     if (!ch.tags.includes(tag)) {
       ch.tags.push(tag)
 
-      // 🧠 Track la modification du chapitre (ajout de tag)
+      // ðŸ§  Track la modification du chapitre (ajout de tag)
       this.trackImportantElement('chapitres', ch.titre, {
         resume: ch.resume,
         tags: ch.tags
@@ -415,7 +419,7 @@ class MemoryManager {
     if (!ch) return false
     ch.tags = (ch.tags || []).filter((t) => t !== tag)
 
-    // 🧠 Track la modification du chapitre (suppression de tag)
+    // ðŸ§  Track la modification du chapitre (suppression de tag)
     this.trackImportantElement('chapitres', ch.titre, {
       resume: ch.resume,
       tags: ch.tags
@@ -461,7 +465,7 @@ class MemoryManager {
     const pnj = c.pnj_importants[index]
     pnj[field] = value
 
-    // 🧠 Track la modification du PNJ
+    // ðŸ§  Track la modification du PNJ
     this.trackImportantElement('pnj', pnj.nom, {
       role: pnj.role,
       description: pnj.description,
@@ -474,7 +478,7 @@ class MemoryManager {
       tags: pnj.tags
     })
 
-    // 🔓 Forcer la lecture des tags du PNJ modifié
+    // ðŸ”“ Forcer la lecture des tags du PNJ modifiÃ©
     this.forceReadElementTags('pnj', pnj.nom)
 
     this.saveCampaign()
@@ -489,7 +493,7 @@ class MemoryManager {
     if (!p.tags.includes(tag)) {
       p.tags.push(tag)
 
-      // 🧠 Track la modification du PNJ (ajout de tag)
+      // ðŸ§  Track la modification du PNJ (ajout de tag)
       this.trackImportantElement('pnj', p.nom, {
         role: p.role,
         description: p.description,
@@ -514,7 +518,7 @@ class MemoryManager {
     const p = c.pnj_importants[pnjIndex]
     p.tags = (p.tags || []).filter((t) => t !== tag)
 
-    // 🧠 Track la modification du PNJ (suppression de tag)
+    // ðŸ§  Track la modification du PNJ (suppression de tag)
     this.trackImportantElement('pnj', p.nom, {
       role: p.role,
       description: p.description,
@@ -559,13 +563,13 @@ class MemoryManager {
     const lieu = c.lieux_importants[index]
     lieu[field] = value
 
-    // 🧠 Track la modification du lieu
+    // ðŸ§  Track la modification du lieu
     this.trackImportantElement('lieux', lieu.nom, {
       description: lieu.description,
       tags: lieu.tags
     })
 
-    // 🔓 Forcer la lecture des tags du lieu modifié
+    // ðŸ”“ Forcer la lecture des tags du lieu modifiÃ©
     this.forceReadElementTags('lieu', lieu.nom)
 
     this.saveCampaign()
@@ -580,7 +584,7 @@ class MemoryManager {
     if (!l.tags.includes(tag)) {
       l.tags.push(tag)
 
-      // 🧠 Track la modification du lieu (ajout de tag)
+      // ðŸ§  Track la modification du lieu (ajout de tag)
       this.trackImportantElement('lieux', l.nom, {
         description: l.description,
         tags: l.tags
@@ -598,7 +602,7 @@ class MemoryManager {
     const l = c.lieux_importants[lieuIndex]
     l.tags = (l.tags || []).filter((t) => t !== tag)
 
-    // 🧠 Track la modification du lieu (suppression de tag)
+    // ðŸ§  Track la modification du lieu (suppression de tag)
     this.trackImportantElement('lieux', l.nom, {
       description: l.description,
       tags: l.tags
@@ -621,7 +625,7 @@ class MemoryManager {
     if (!c) return false
     c.evenements_cles = c.evenements_cles || []
     c.evenements_cles.push({
-      titre: 'Nouvel événement',
+      titre: 'Nouvel Ã©vÃ©nement',
       description: '',
       consequences: '',
       personnages_impliques: [],
@@ -640,7 +644,7 @@ class MemoryManager {
     const evt = c.evenements_cles[index]
     evt[field] = value
 
-    // 🧠 Track la modification de l'événement
+    // ðŸ§  Track la modification de l'Ã©vÃ©nement
     this.trackImportantElement('evenements', evt.titre, {
       description: evt.description,
       consequences: evt.consequences,
@@ -649,7 +653,7 @@ class MemoryManager {
       tags: evt.tags
     })
 
-    // 🔓 Forcer la lecture des tags de l'événement modifié
+    // ðŸ”“ Forcer la lecture des tags de l'Ã©vÃ©nement modifiÃ©
     this.forceReadElementTags('evenement', evt.titre)
 
     this.saveCampaign()
@@ -664,7 +668,7 @@ class MemoryManager {
     if (!e.tags.includes(tag)) {
       e.tags.push(tag)
 
-      // 🧠 Track la modification de l'événement (ajout de tag)
+      // ðŸ§  Track la modification de l'Ã©vÃ©nement (ajout de tag)
       this.trackImportantElement('evenements', e.titre, {
         description: e.description,
         consequences: e.consequences,
@@ -685,7 +689,7 @@ class MemoryManager {
     const e = c.evenements_cles[index]
     e.tags = (e.tags || []).filter((t) => t !== tag)
 
-    // 🧠 Track la modification de l'événement (suppression de tag)
+    // ðŸ§  Track la modification de l'Ã©vÃ©nement (suppression de tag)
     this.trackImportantElement('evenements', e.titre, {
       description: e.description,
       consequences: e.consequences,
@@ -727,7 +731,7 @@ class MemoryManager {
     return true
   }
 
-  // 🔄 Vérifier si un tag doit être lu (throttling)
+  // ðŸ”„ VÃ©rifier si un tag doit Ãªtre lu (throttling)
   shouldReadTag(tagName) {
     if (!this.currentSessionId) return true
 
@@ -746,19 +750,19 @@ class MemoryManager {
       return true
     }
 
-    // Si lu récemment (moins de 8 échanges), ne pas relire
+    // Si lu rÃ©cemment (moins de 8 Ã©changes), ne pas relire
     if (tagInfo.readCount < this.tagThrottleInterval) {
       tagInfo.readCount++
       return false
     }
 
-    // Après 8 échanges, relire et réinitialiser le compteur
+    // AprÃ¨s 8 Ã©changes, relire et rÃ©initialiser le compteur
     tagInfo.readCount = 1
     tagInfo.lastReadAt = Date.now()
     return true
   }
 
-  // 🧹 Nettoyer les tags: supprimer les vides et les espaces
+  // ðŸ§¹ Nettoyer les tags: supprimer les vides et les espaces
   cleanTags(tags) {
     if (!Array.isArray(tags)) return []
 
@@ -767,8 +771,8 @@ class MemoryManager {
       .filter((tag) => tag.length > 0)
   }
 
-  // 🔓 Forcer la lecture d'un tag (pour les modifications)
-  // Quand on modifie un élément, on veut que l'IA relise ses infos
+  // ðŸ”“ Forcer la lecture d'un tag (pour les modifications)
+  // Quand on modifie un Ã©lÃ©ment, on veut que l'IA relise ses infos
   forceReadTag(tagName) {
     if (!this.currentSessionId) return
 
@@ -776,14 +780,14 @@ class MemoryManager {
       this.tagThrottleMap[this.currentSessionId] = {}
     }
 
-    // Réinitialiser le compteur pour forcer la lecture au prochain échange
+    // RÃ©initialiser le compteur pour forcer la lecture au prochain Ã©change
     this.tagThrottleMap[this.currentSessionId][tagName] = {
       lastReadAt: Date.now(),
       readCount: 0 // Forcer la lecture
     }
   }
 
-  // 🔓 Forcer la lecture de tous les tags d'un élément
+  // ðŸ”“ Forcer la lecture de tous les tags d'un Ã©lÃ©ment
   forceReadElementTags(elementType, elementName) {
     const c = this.getCurrentCampaign()
     if (!c) return
@@ -850,12 +854,12 @@ class MemoryManager {
     const c = this.getCurrentCampaign()
     if (!c || !tags || tags.length === 0) return ''
 
-    let output = '\n// CONTEXTE RÉCENT:\n'
+    let output = '\n// CONTEXTE RÃ‰CENT:\n'
 
     tags.forEach((tag) => {
-      // 🔄 Vérifier si ce tag doit être lu maintenant (throttling)
+      // ðŸ”„ VÃ©rifier si ce tag doit Ãªtre lu maintenant (throttling)
       if (!this.shouldReadTag(tag)) {
-        return // Sauter ce tag, il a été lu récemment
+        return // Sauter ce tag, il a Ã©tÃ© lu rÃ©cemment
       }
 
       const lieux = (c.lieux_importants || []).filter(
@@ -924,11 +928,11 @@ class MemoryManager {
   }
 
   getEmotionDescription(v) {
-    if (v >= 80) return 'Très élevé'
-    if (v >= 60) return 'Élevé'
+    if (v >= 80) return 'TrÃ¨s Ã©levÃ©'
+    if (v >= 60) return 'Ã‰levÃ©'
     if (v >= 40) return 'Moyen'
     if (v >= 20) return 'Faible'
-    return 'Très faible'
+    return 'TrÃ¨s faible'
   }
 
   getEmotionColor(v) {
@@ -958,7 +962,7 @@ class MemoryManager {
           pnj.histoire = (pnj.histoire || '') + `\n[${new Date().toISOString()}] ${raison}: ${changement}`
         }
 
-        // 🧠 Track la modification du PNJ par l'IA
+        // ðŸ§  Track la modification du PNJ par l'IA
         this.trackImportantElement('pnj', pnj.nom, {
           role: pnj.role,
           description: pnj.description,
@@ -971,7 +975,7 @@ class MemoryManager {
           tags: pnj.tags
         })
 
-        // 🔓 Forcer la lecture des tags du PNJ modifié par l'IA
+        // ðŸ”“ Forcer la lecture des tags du PNJ modifiÃ© par l'IA
         this.forceReadElementTags('pnj', pnj.nom)
       }
     })
@@ -988,7 +992,7 @@ class MemoryManager {
         c.chapitres = c.chapitres || []
         const id = Math.max(0, ...(c.chapitres || []).map((x) => x.id || 0)) + 1
 
-        // 🧹 Nettoyer les tags
+        // ðŸ§¹ Nettoyer les tags
         const cleanedTags = this.cleanTags(data.tags || [])
 
         const newChapitre = {
@@ -1001,7 +1005,7 @@ class MemoryManager {
         }
         c.chapitres.push(newChapitre)
 
-        // 🧠 Track le chapitre dans la mémoire importante
+        // ðŸ§  Track le chapitre dans la mÃ©moire importante
         this.trackImportantElement('chapitres', data.titre, {
           resume: data.resume,
           tags: cleanedTags
@@ -1010,7 +1014,7 @@ class MemoryManager {
         c.pnj_importants = c.pnj_importants || []
         const existing = (c.pnj_importants || []).find((p) => p.nom === data.nom)
 
-        // 🧹 Nettoyer les tags
+        // ðŸ§¹ Nettoyer les tags
         const cleanedTags = this.cleanTags(data.tags || [])
 
         if (existing) {
@@ -1033,7 +1037,7 @@ class MemoryManager {
           }
           c.pnj_importants.push(newPNJ)
 
-          // 🧠 Track le PNJ dans la mémoire importante
+          // ðŸ§  Track le PNJ dans la mÃ©moire importante
           this.trackImportantElement('pnj', data.nom, {
             role: data.role,
             description: data.description,
@@ -1050,7 +1054,7 @@ class MemoryManager {
         c.lieux_importants = c.lieux_importants || []
         const existing = (c.lieux_importants || []).find((l) => l.nom === data.nom)
 
-        // 🧹 Nettoyer les tags
+        // ðŸ§¹ Nettoyer les tags
         const cleanedTags = this.cleanTags(data.tags || [])
 
         if (existing) {
@@ -1064,14 +1068,14 @@ class MemoryManager {
             priorite: 5
           })
 
-          // 🧠 Track le lieu dans la mémoire importante
+          // ðŸ§  Track le lieu dans la mÃ©moire importante
           this.trackImportantElement('lieux', data.nom, {
             description: data.description,
             tags: cleanedTags
           })
         }
       } else if (type === 'EVENEMENT') {
-        // 🧹 Nettoyer les tags
+        // ðŸ§¹ Nettoyer les tags
         const cleanedTags = this.cleanTags(data.tags || [])
 
         const newEvenement = {
@@ -1087,7 +1091,7 @@ class MemoryManager {
         c.evenements_cles = c.evenements_cles || []
         c.evenements_cles.push(newEvenement)
 
-        // 🧠 Track l'événement dans la mémoire importante
+        // ðŸ§  Track l'Ã©vÃ©nement dans la mÃ©moire importante
         this.trackImportantElement('evenements', data.titre, {
           description: data.description,
           consequences: data.consequences,
@@ -1101,8 +1105,8 @@ class MemoryManager {
     this.saveCampaign()
   }
 
-  // 🧠 TRACKER D'ÉLÉMENTS IMPORTANTS
-  // Enregistre les éléments clés avec TOUTES leurs données pour les retrouver même s'ils sont vieux
+  // ðŸ§  TRACKER D'Ã‰LÃ‰MENTS IMPORTANTS
+  // Enregistre les Ã©lÃ©ments clÃ©s avec TOUTES leurs donnÃ©es pour les retrouver mÃªme s'ils sont vieux
   trackImportantElement(type, name, data = {}) {
     if (!this.currentSessionId) return
 
@@ -1119,7 +1123,7 @@ class MemoryManager {
     const typeKey = type.toLowerCase()
 
     if (memory[typeKey]) {
-      // Stocker les données complètes de l'élément
+      // Stocker les donnÃ©es complÃ¨tes de l'Ã©lÃ©ment
       memory[typeKey][name] = {
         ...data,
         lastSeen: new Date().toISOString(),
@@ -1128,7 +1132,7 @@ class MemoryManager {
     }
   }
 
-  // 🔍 RÉCUPÉRER LES ÉLÉMENTS IMPORTANTS
+  // ðŸ” RÃ‰CUPÃ‰RER LES Ã‰LÃ‰MENTS IMPORTANTS
   getImportantElements(limit = 10) {
     if (!this.currentSessionId || !this.importantMemory[this.currentSessionId]) {
       return []
@@ -1137,7 +1141,7 @@ class MemoryManager {
     const memory = this.importantMemory[this.currentSessionId]
     const allElements = []
 
-    // Collecter tous les éléments avec leur fréquence
+    // Collecter tous les Ã©lÃ©ments avec leur frÃ©quence
     Object.entries(memory).forEach(([type, items]) => {
       Object.entries(items).forEach(([name, data]) => {
         allElements.push({
@@ -1150,7 +1154,7 @@ class MemoryManager {
       })
     })
 
-    // Trier par fréquence (décroissant) puis par date
+    // Trier par frÃ©quence (dÃ©croissant) puis par date
     return allElements
       .sort((a, b) => {
         if (b.frequency !== a.frequency) return b.frequency - a.frequency
@@ -1163,7 +1167,7 @@ class MemoryManager {
     const c = this.getCurrentCampaign()
     if (!c) return 'Aucun contexte de campagne.'
 
-    // 🔍 CACHE DES TAGS: Éviter de rechercher les tags trop souvent
+    // ðŸ” CACHE DES TAGS: Ã‰viter de rechercher les tags trop souvent
     if (!this.tagsCacheTimestamp) {
       this.tagsCacheTimestamp = 0
       this.tagsCache = {}
@@ -1182,8 +1186,8 @@ class MemoryManager {
       this.tagsCacheTimestamp = now
     }
 
-    // Reste du code tronqué
-    return '' // Retourne une chaîne vide pour éviter une erreur
+    // Reste du code tronquÃ©
+    return '' // Retourne une chaÃ®ne vide pour Ã©viter une erreur
   }
 }
 
