@@ -93,7 +93,6 @@ export default function App() {
 
     return (
         <div className="p-8 max-w-lg mx-auto bg-white min-h-screen font-sans">
-            <script src="https://cdn.tailwindcss.com"></script>
             <h1 className="text-3xl font-extrabold mb-6 text-gray-800 border-b pb-2">
                 Démonstration de `useSyncSessions`
             </h1>
@@ -129,7 +128,7 @@ export default function App() {
             </div>
 
             <p className="mt-8 text-xs text-gray-500 text-center">
-                Consultez la console de développement. Le `MemoryManager` met à jour son ID utilisateur ~500ms après la "Connexion" (simulant `checkSession`).
+                Consultez la console de développement. Le `MemoryManager` met à jour son ID utilisateur ~500ms après la &quot;Connexion&quot; (simulant `checkSession`).
             </p>
         </div>
     );
